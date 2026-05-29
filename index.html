@@ -1488,6 +1488,8 @@ async function aprobarPedido(pedidoId) {
     showToast('Error al aprobar el pedido', 'error');
   }
 }
+
+async function eliminarPedido(pedidoId) {
   if (!confirm('¿Eliminar este pedido?')) return;
   await db.from('pedido_items').delete().eq('pedido_id', pedidoId);
   await db.from('pedidos').delete().eq('id', pedidoId);
