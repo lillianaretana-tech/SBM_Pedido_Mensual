@@ -934,9 +934,14 @@ async function onProyectoChange() {
   orderItems = [];
   renderOrder();
 
+  // Reset send button
+  const btnSend = document.getElementById('btn-send');
+  btnSend.textContent = 'Enviar pedido';
+  btnSend.style.background = '';
+
   if (!currentProyectoId) {
     document.getElementById('budget-display').innerHTML = '<div style="color:var(--muted);font-size:13px;text-align:center;padding:16px;">Seleccioná un proyecto</div>';
-    document.getElementById('btn-send').disabled = true;
+    btnSend.disabled = true;
     document.getElementById('history-list').innerHTML = '<div class="history-empty">Sin pedidos recientes</div>';
     return;
   }
@@ -944,7 +949,7 @@ async function onProyectoChange() {
   await loadPresupuestos(currentProyectoId);
   renderBudget();
   await loadHistorial(currentProyectoId);
-  document.getElementById('btn-send').disabled = orderItems.length === 0;
+  btnSend.disabled = orderItems.length === 0;
 }
 
 // ══════════════════════════════════════════
@@ -1232,10 +1237,109 @@ function renderHistorial(pedidos) {
           <span class="history-title">${fecha}</span>
           <span class="history-total">₡${fmtNum(p.total)}</span>
         </div>
-        <div class="history-meta">${items} item${items !== 1 ? 's' : ''} · ${p.estado}</div>
+        <div class="history-meta" style="margin-bottom:6px;">${items} item${items !== 1 ? 's' : ''} · ${p.estado}</div>
+        <div style="display:flex;gap:6px;">
+          <button onclick="exportPedidoExcel('${p.id}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-size:11px;cursor:pointer;">📊 Excel</button>
+          <button onclick="exportPedidoPDF('${p.id}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-size:11px;cursor:pointer;">📄 PDF</button>
+          <button onclick="eliminarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--danger);border-radius:6px;background:transparent;color:var(--danger);font-size:11px;cursor:pointer;">Eliminar</button>
+        </div>
       </div>
     `;
   }).join('');
+}
+
+async function eliminarPedido(pedidoId) {
+  if (!confirm('¿Eliminar este pedido?')) return;
+  await db.from('pedido_items').delete().eq('pedido_id', pedidoId);
+  await db.from('pedidos').delete().eq('id', pedidoId);
+  showToast('Pedido eliminado', 'success');
+  await loadHistorial(currentProyectoId);
+}
+
+async function getPedidoData(pedidoId) {
+  const { data } = await db.from('pedidos')
+    .select('*, proyectos(nombre), pedido_items(*)')
+    .eq('id', pedidoId)
+    .single();
+  return data;
+}
+
+async function exportPedidoExcel(pedidoId) {
+  const p = await getPedidoData(pedidoId);
+  if (!p) return;
+
+  const fecha = new Date(p.created_at).toLocaleDateString('es-CR');
+  const lineas = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
+  const labels = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
+
+  let csv = `Pedido de Suministros - ${p.proyectos?.nombre}\n`;
+  csv += `Fecha: ${fecha}\n\n`;
+  csv += `Código,Descripción,Línea,Precio Unitario,Cantidad,Subtotal\n`;
+
+  lineas.forEach(linea => {
+    const items = (p.pedido_items || []).filter(i => i.linea === linea);
+    if (!items.length) return;
+    items.forEach(i => {
+      csv += `"${i.codigo}","${i.descripcion}","${labels[linea]}",${i.precio},${i.cantidad},${i.precio * i.cantidad}\n`;
+    });
+  });
+
+  csv += `\nTOTAL,,,,, ${p.total}\n`;
+  if (p.notas) csv += `\nObservaciones: "${p.notas}"\n`;
+
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Pedido_${p.proyectos?.nombre}_${fecha.replace(/\//g,'-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Excel descargado', 'success');
+}
+
+async function exportPedidoPDF(pedidoId) {
+  const p = await getPedidoData(pedidoId);
+  if (!p) return;
+
+  const fecha = new Date(p.created_at).toLocaleDateString('es-CR');
+  const lineas = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
+  const labels = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
+
+  let html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <style>
+    body{font-family:Arial,sans-serif;font-size:12px;margin:20px;color:#222;}
+    h1{color:#1a6b4a;font-size:16px;margin-bottom:4px;}
+    .meta{color:#666;margin-bottom:16px;font-size:11px;}
+    h2{font-size:13px;color:#333;margin:16px 0 6px;border-bottom:1px solid #ddd;padding-bottom:4px;}
+    table{width:100%;border-collapse:collapse;margin-bottom:12px;}
+    th{background:#f0f0f0;text-align:left;padding:5px 8px;border:1px solid #ddd;font-size:11px;}
+    td{padding:4px 8px;border:1px solid #ddd;font-size:11px;}
+    .total{font-size:14px;font-weight:bold;margin-top:12px;text-align:right;}
+    .notas{background:#fffbe6;padding:10px;border-left:3px solid #f0a050;margin-top:12px;font-size:11px;}
+    .right{text-align:right;}
+  </style></head><body>
+  <h1>Pedido de Suministros — ${p.proyectos?.nombre}</h1>
+  <div class="meta">Fecha: ${fecha}</div>`;
+
+  lineas.forEach(linea => {
+    const items = (p.pedido_items || []).filter(i => i.linea === linea);
+    if (!items.length) return;
+    html += `<h2>${labels[linea]}</h2><table>
+    <thead><tr><th>Código</th><th>Descripción</th><th class="right">Precio Unit.</th><th class="right">Cant.</th><th class="right">Subtotal</th></tr></thead><tbody>`;
+    items.forEach(i => {
+      html += `<tr><td>${i.codigo}</td><td>${i.descripcion}</td><td class="right">₡${fmtNum(i.precio)}</td><td class="right">${i.cantidad}</td><td class="right">₡${fmtNum(i.precio*i.cantidad)}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+  });
+
+  html += `<div class="total">TOTAL: ₡${fmtNum(p.total)}</div>`;
+  if (p.notas) html += `<div class="notas"><strong>Observaciones:</strong> ${p.notas}</div>`;
+  html += `</body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+  win.print();
 }
 
 // ══════════════════════════════════════════
@@ -1250,25 +1354,65 @@ async function enviarPedido() {
 
   const proyecto = proyectos.find(p => p.id === currentProyectoId);
   const total = orderItems.reduce((s, i) => s + i.precio * i.cantidad, 0);
-
   const notas = document.getElementById('pedido-notas').value.trim();
+  const fecha = new Date().toLocaleDateString('es-CR', { day: '2-digit', month: 'long', year: 'numeric' });
+  const lineas = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
+  const labels = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
+
+  // Construir cuerpo del email en HTML para mejor visualización
+  let emailHtml = `<div style="font-family:monospace;font-size:13px;">`;
+  emailHtml += `<h2 style="font-family:sans-serif;color:#1a6b4a;">Pedido de Suministros — ${proyecto.nombre}</h2>`;
+  emailHtml += `<p style="font-family:sans-serif;color:#666;">Fecha: ${fecha} &nbsp;|&nbsp; Supervisor: ${currentUser.nombre}</p>`;
+  emailHtml += `<hr/>`;
+
+  lineas.forEach(linea => {
+    const items = orderItems.filter(i => i.linea === linea);
+    if (!items.length) return;
+    emailHtml += `<h3 style="font-family:sans-serif;color:#333;margin-top:16px;">${labels[linea]}</h3>`;
+    emailHtml += `<table style="width:100%;border-collapse:collapse;font-size:12px;">`;
+    emailHtml += `<thead><tr style="background:#f0f0f0;">
+      <th style="text-align:left;padding:6px 8px;border:1px solid #ddd;">Código</th>
+      <th style="text-align:left;padding:6px 8px;border:1px solid #ddd;">Descripción</th>
+      <th style="text-align:right;padding:6px 8px;border:1px solid #ddd;">Precio Unit.</th>
+      <th style="text-align:center;padding:6px 8px;border:1px solid #ddd;">Cant.</th>
+      <th style="text-align:right;padding:6px 8px;border:1px solid #ddd;">Subtotal</th>
+    </tr></thead><tbody>`;
+    items.forEach(i => {
+      const spec = i.talla ? ` <em>[Talla: ${i.talla}${i.color ? ' / Color: ' + i.color : ''}]</em>` : '';
+      emailHtml += `<tr>
+        <td style="padding:5px 8px;border:1px solid #ddd;color:#666;">${i.codigo}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;">${i.descripcion}${spec}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;text-align:right;">₡${fmtNum(i.precio)}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;text-align:center;">${i.cantidad}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;text-align:right;font-weight:600;">₡${fmtNum(i.precio*i.cantidad)}</td>
+      </tr>`;
+    });
+    emailHtml += `</tbody></table>`;
+  });
+
+  emailHtml += `<hr style="margin-top:16px;"/>`;
+  emailHtml += `<p style="font-family:sans-serif;font-size:15px;font-weight:bold;">TOTAL PEDIDO: ₡${fmtNum(total)}</p>`;
+  if (notas) emailHtml += `<p style="font-family:sans-serif;background:#fffbe6;padding:10px;border-left:3px solid #f0a050;"><strong>Observaciones:</strong> ${notas}</p>`;
+  emailHtml += `</div>`;
 
   // Guardar en Supabase
+  let pedidoId = null;
   try {
     const { data: pedido, error: pedErr } = await db.from('pedidos').insert({
       proyecto_id: currentProyectoId,
-      supervisor_id: currentUser.supabase_id || '00000000-0000-0000-0000-000000000001',
+      supervisor_id: currentUser.id || '00000000-0000-0000-0000-000000000001',
       estado: 'enviado',
       total: total,
-      notas: ''
+      notas: notas
     }).select().single();
 
     if (!pedErr && pedido) {
+      pedidoId = pedido.id;
       const itemsToInsert = orderItems.map(i => ({
         pedido_id: pedido.id,
         producto_id: i.producto_id,
         codigo: i.codigo,
-        descripcion: i.descripcion,
+        descripcion: i.descripcion + (i.talla ? ` [Talla: ${i.talla}${i.color ? ' / Color: ' + i.color : ''}]` : ''),
         linea: i.linea,
         precio: i.precio,
         cantidad: i.cantidad,
@@ -1278,50 +1422,28 @@ async function enviarPedido() {
     }
   } catch(e) { console.warn('Error guardando pedido:', e); }
 
-  // Generar cuerpo del email
-  const fecha = new Date().toLocaleDateString('es-CR', { day: '2-digit', month: 'long', year: 'numeric' });
-  const lineas = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
-  const labels = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
-
-  let emailBody = `PEDIDO DE SUMINISTROS — ${proyecto.nombre.toUpperCase()}\nFecha: ${fecha}\nSupervisor: ${currentUser.nombre}\n\n`;
-
-  lineas.forEach(linea => {
-    const items = orderItems.filter(i => i.linea === linea);
-    if (!items.length) return;
-    emailBody += `\n── ${labels[linea]} ──\n`;
-    emailBody += `${'Código'.padEnd(15)} ${'Descripción'.padEnd(40)} ${'P.Unit.'.padStart(12)} ${'Cant.'.padStart(6)} ${'Subtotal'.padStart(12)}\n`;
-    emailBody += '─'.repeat(88) + '\n';
-    items.forEach(i => {
-      const spec = i.talla ? ` [Talla: ${i.talla}${i.color ? ' / Color: ' + i.color : ''}]` : '';
-      const desc = (i.descripcion + spec).substring(0, 48).padEnd(50);
-      emailBody += `${i.codigo.padEnd(15)} ${desc} ₡${fmtNum(i.precio).padStart(10)} ${String(i.cantidad).padStart(6)} ₡${fmtNum(i.precio*i.cantidad).padStart(10)}\n`;
-    });
-  });
-
-  emailBody += '\n' + '═'.repeat(88) + '\n';
-  emailBody += `TOTAL PEDIDO: ₡${fmtNum(total)}\n`;
-  if (notas) emailBody += `\nOBSERVACIONES: ${notas}\n`;
-
+  // Enviar email
   try {
     await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
       proyecto: proyecto.nombre,
       fecha: fecha,
       name: currentUser.nombre,
-      mensaje: emailBody
+      mensaje: emailHtml,
+      reply_to: 'Lretana@sbmcorp.com',
+      bcc_email: 'Lretana@sbmcorp.com'
     });
-    showToast('¡Pedido enviado correctamente!', 'success');
-    orderItems = [];
-    document.getElementById('pedido-notas').value = '';
-    renderOrder();
-    renderBudget();
+    showToast('¡Pedido enviado! Quedó guardado en el historial.', 'success');
+    // NO borrar el pedido — queda visible para revisión
+    // Solo marcar visualmente que fue enviado
+    document.getElementById('btn-send').textContent = '✓ Pedido enviado';
+    document.getElementById('btn-send').style.background = 'var(--muted)';
     await loadHistorial(currentProyectoId);
   } catch(e) {
     console.error('EmailJS error:', e);
-    showToast('Error al enviar el email. Revisá la consola.', 'error');
+    showToast('Pedido guardado pero error al enviar email: ' + e.text, 'error');
   }
 
   btn.disabled = false;
-  btn.textContent = 'Enviar pedido';
 }
 
 // ══════════════════════════════════════════
