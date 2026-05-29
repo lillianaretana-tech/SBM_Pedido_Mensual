@@ -6,6 +6,7 @@
 <title>SBM — Sistema de Pedidos</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -643,6 +644,14 @@
           <div class="history-empty">Sin pedidos recientes</div>
         </div>
       </div>
+
+      <!-- Panel Uber Consolidado (solo visible para Uber COE y Admin) -->
+      <div class="card" id="uber-consolidado" style="display:none;">
+        <div class="card-title">📊 Resumen Uber — Consolidado</div>
+        <div id="uber-consolidado-content">
+          <div style="color:var(--muted);font-size:13px;text-align:center;padding:16px;">Cargando...</div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -654,6 +663,7 @@
       <button class="admin-tab active" onclick="showAdminTab('catalogo')">Catálogo</button>
       <button class="admin-tab" onclick="showAdminTab('presupuestos')">Presupuestos</button>
       <button class="admin-tab" onclick="showAdminTab('usuarios')">Usuarios</button>
+      <button class="admin-tab" onclick="showAdminTab('uber')">Uber Consolidado</button>
       <button class="admin-tab" onclick="showAdminTab('historial')">Historial</button>
     </div>
 
@@ -682,13 +692,6 @@
       </div>
     </div>
 
-    <div id="tab-historial" class="tab-content">
-      <div class="card">
-        <div class="card-title">Todos los pedidos — últimos 2 meses</div>
-        <div id="admin-history"></div>
-      </div>
-    </div>
-
     <div id="tab-usuarios" class="tab-content">
       <div class="card">
         <div class="card-title">
@@ -703,10 +706,24 @@
         </div>
       </div>
     </div>
+
+    <div id="tab-uber" class="tab-content">
+      <div class="card">
+        <div class="card-title">Uber — Consolidado de los 3 proyectos</div>
+        <div id="admin-uber-content">
+          <div style="color:var(--muted);font-size:13px;text-align:center;padding:16px;">Cargando...</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-historial" class="tab-content">
+      <div class="card">
+        <div class="card-title">Todos los pedidos — últimos 2 meses</div>
+        <div id="admin-history"></div>
+      </div>
+    </div>
   </div>
 </div>
-
-<!-- MODAL USUARIOS -->
 <div id="user-modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:500; align-items:center; justify-content:center;">
   <div style="background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:28px; width:380px; box-shadow:var(--shadow);">
     <div style="font-size:15px; font-weight:600; margin-bottom:20px;" id="user-modal-title">Nuevo usuario</div>
@@ -925,6 +942,15 @@ function showSupervisorView() {
       sel.value = proy.id;
       onProyectoChange();
     }
+  }
+
+  // Mostrar panel Uber consolidado para COE y Admin
+  const uberPanel = document.getElementById('uber-consolidado');
+  if (isUberCOE() || isAdmin()) {
+    uberPanel.style.display = 'block';
+    loadAndRenderUberConsolidado('uber-consolidado-content');
+  } else {
+    uberPanel.style.display = 'none';
   }
 }
 
@@ -1271,29 +1297,108 @@ async function exportPedidoExcel(pedidoId) {
   const fecha = new Date(p.created_at).toLocaleDateString('es-CR');
   const lineas = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
   const labels = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
+  const lineaColors = { EPP: '9B8FEF', Quimicos: '38BDF8', Suministros: '2ECC8A', Uniformes: 'F472B6', Overhead: 'FBBF24' };
 
-  let csv = `Pedido de Suministros - ${p.proyectos?.nombre}\n`;
-  csv += `Fecha: ${fecha}\n\n`;
-  csv += `Código,Descripción,Línea,Precio Unitario,Cantidad,Subtotal\n`;
+  const wb = XLSX.utils.book_new();
+  const ws = {};
+  let row = 1;
 
+  // Helper para crear celdas con estilo
+  const cell = (v, s = {}) => ({ v, s });
+  const setCell = (col, r, v, s = {}) => { ws[col + r] = { v, s }; };
+
+  // ── ENCABEZADO PRINCIPAL ──
+  ws['A' + row] = { v: 'SBM Management Services', s: { font: { bold: true, sz: 16, color: { rgb: '2ECC8A' } } } };
+  row++;
+  ws['A' + row] = { v: `Pedido de Suministros — ${p.proyectos?.nombre}`, s: { font: { bold: true, sz: 13 } } };
+  row++;
+  ws['A' + row] = { v: `Fecha: ${fecha}`, s: { font: { sz: 11, color: { rgb: '6B7080' } } } };
+  row++;
+  ws['A' + row] = { v: `Generado por: ${p.supervisor_nombre || 'Sistema'}`, s: { font: { sz: 11, color: { rgb: '6B7080' } } } };
+  row += 2;
+
+  // ── ENCABEZADOS DE TABLA ──
+  const headers = ['Código', 'Descripción', 'Línea', 'Precio Unit. (₡)', 'Cantidad', 'Subtotal (₡)'];
+  const cols = ['A', 'B', 'C', 'D', 'E', 'F'];
+  const headerStyle = {
+    font: { bold: true, sz: 11, color: { rgb: 'FFFFFF' } },
+    fill: { fgColor: { rgb: '1A1D27' } },
+    alignment: { horizontal: 'center' },
+    border: { bottom: { style: 'medium', color: { rgb: '2ECC8A' } } }
+  };
+  headers.forEach((h, i) => {
+    ws[cols[i] + row] = { v: h, s: headerStyle };
+  });
+  row++;
+
+  // ── FILAS POR LÍNEA ──
+  let grandTotal = 0;
   lineas.forEach(linea => {
     const items = (p.pedido_items || []).filter(i => i.linea === linea);
     if (!items.length) return;
-    items.forEach(i => {
-      csv += `"${i.codigo}","${i.descripcion}","${labels[linea]}",${i.precio},${i.cantidad},${i.precio * i.cantidad}\n`;
+
+    // Subtítulo de línea
+    const lineaStyle = {
+      font: { bold: true, sz: 10, color: { rgb: lineaColors[linea] } },
+      fill: { fgColor: { rgb: 'F8F9FA' } }
+    };
+    ws['A' + row] = { v: `— ${labels[linea]} —`, s: lineaStyle };
+    ws['B' + row] = { v: '', s: { fill: { fgColor: { rgb: 'F8F9FA' } } } };
+    ws['C' + row] = { v: '', s: { fill: { fgColor: { rgb: 'F8F9FA' } } } };
+    ws['D' + row] = { v: '', s: { fill: { fgColor: { rgb: 'F8F9FA' } } } };
+    ws['E' + row] = { v: '', s: { fill: { fgColor: { rgb: 'F8F9FA' } } } };
+    ws['F' + row] = { v: '', s: { fill: { fgColor: { rgb: 'F8F9FA' } } } };
+    row++;
+
+    items.forEach((i, idx) => {
+      const subtotal = i.precio * i.cantidad;
+      grandTotal += subtotal;
+      const bg = idx % 2 === 0 ? 'FFFFFF' : 'F5F5F5';
+      const rowStyle = { fill: { fgColor: { rgb: bg } }, border: { bottom: { style: 'thin', color: { rgb: 'E2E0D8' } } } };
+
+      ws['A' + row] = { v: i.codigo, s: { ...rowStyle, font: { sz: 10, color: { rgb: '6B7080' } } } };
+      ws['B' + row] = { v: i.descripcion, s: { ...rowStyle, font: { sz: 10 } } };
+      ws['C' + row] = { v: labels[linea], s: { ...rowStyle, font: { bold: true, sz: 10, color: { rgb: lineaColors[linea] } }, alignment: { horizontal: 'center' } } };
+      ws['D' + row] = { v: i.precio, s: { ...rowStyle, numFmt: '#,##0.00', alignment: { horizontal: 'right' }, font: { sz: 10 } } };
+      ws['E' + row] = { v: i.cantidad, s: { ...rowStyle, alignment: { horizontal: 'center' }, font: { sz: 10 } } };
+      ws['F' + row] = { v: subtotal, s: { ...rowStyle, numFmt: '#,##0.00', alignment: { horizontal: 'right' }, font: { bold: true, sz: 10 } } };
+      row++;
     });
   });
 
-  csv += `\nTOTAL,,,,, ${p.total}\n`;
-  if (p.notas) csv += `\nObservaciones: "${p.notas}"\n`;
+  // ── FILA TOTAL ──
+  row++;
+  const totalStyle = { font: { bold: true, sz: 12, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '1A6B4A' } }, alignment: { horizontal: 'right' } };
+  ws['A' + row] = { v: '', s: { fill: { fgColor: { rgb: '1A6B4A' } } } };
+  ws['B' + row] = { v: '', s: { fill: { fgColor: { rgb: '1A6B4A' } } } };
+  ws['C' + row] = { v: '', s: { fill: { fgColor: { rgb: '1A6B4A' } } } };
+  ws['D' + row] = { v: '', s: { fill: { fgColor: { rgb: '1A6B4A' } } } };
+  ws['E' + row] = { v: 'TOTAL GENERAL:', s: totalStyle };
+  ws['F' + row] = { v: grandTotal, s: { ...totalStyle, numFmt: '#,##0.00' } };
 
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `Pedido_${p.proyectos?.nombre}_${fecha.replace(/\//g,'-')}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  // ── OBSERVACIONES ──
+  if (p.notas) {
+    row += 2;
+    ws['A' + row] = { v: 'Observaciones:', s: { font: { bold: true, sz: 11 } } };
+    row++;
+    ws['A' + row] = { v: p.notas, s: { font: { sz: 10, color: { rgb: '555555' } } } };
+  }
+
+  // ── ANCHOS DE COLUMNA ──
+  ws['!cols'] = [
+    { wch: 16 }, // Código
+    { wch: 45 }, // Descripción
+    { wch: 14 }, // Línea
+    { wch: 18 }, // Precio
+    { wch: 10 }, // Cantidad
+    { wch: 18 }, // Subtotal
+  ];
+
+  // ── RANGO ──
+  ws['!ref'] = `A1:F${row}`;
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
+  XLSX.writeFile(wb, `Pedido_${p.proyectos?.nombre}_${fecha.replace(/\//g,'-')}.xlsx`);
   showToast('Excel descargado', 'success');
 }
 
@@ -1424,23 +1529,36 @@ async function enviarPedido() {
 
   // Enviar email
   try {
-    await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+    const emailData = {
       proyecto: proyecto.nombre,
       fecha: fecha,
       name: currentUser.nombre,
-      mensaje: emailHtml,
-      reply_to: 'Lretana@sbmcorp.com',
-      bcc_email: 'Lretana@sbmcorp.com'
+      mensaje: emailHtml
+    };
+
+    // Primer email — correo SBM corporativo
+    await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+      ...emailData,
+      to_email: 'Lretana@sbmcorp.com'
     });
+
+    // Segundo email — Gmail personal como respaldo
+    try {
+      await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+        ...emailData,
+        to_email: 'lilliana.retana@gmail.com'
+      });
+    } catch(e2) {
+      console.warn('No se pudo enviar copia a Gmail:', e2);
+    }
+
     showToast('¡Pedido enviado! Quedó guardado en el historial.', 'success');
-    // NO borrar el pedido — queda visible para revisión
-    // Solo marcar visualmente que fue enviado
     document.getElementById('btn-send').textContent = '✓ Pedido enviado';
     document.getElementById('btn-send').style.background = 'var(--muted)';
     await loadHistorial(currentProyectoId);
   } catch(e) {
     console.error('EmailJS error:', e);
-    showToast('Pedido guardado pero error al enviar email: ' + e.text, 'error');
+    showToast('Pedido guardado pero error al enviar email: ' + (e.text || e.message || 'error desconocido'), 'error');
   }
 
   btn.disabled = false;
@@ -1466,12 +1584,161 @@ function toggleAdmin() {
   }
 }
 
+// ══════════════════════════════════════════
+//  UBER CONSOLIDADO
+// ══════════════════════════════════════════
+const UBER_PROYECTOS = ['UBER Bambú', 'Uber COE', 'Uber Cedral'];
+const LINEAS = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
+const LABELS = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
+
+function isUberCOE() {
+  return currentUser?.proyecto_nombre === 'Uber COE';
+}
+
+function isAdmin() {
+  return currentUser?.rol === 'admin';
+}
+
+async function loadUberConsolidado() {
+  const uberProyectos = proyectos.filter(p => UBER_PROYECTOS.includes(p.nombre));
+  if (!uberProyectos.length) return null;
+
+  const twoMonthsAgo = new Date();
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+  // Cargar pedidos de los 3 Uber
+  const { data: pedidos } = await db
+    .from('pedidos')
+    .select('*, pedido_items(*), proyectos(nombre)')
+    .in('proyecto_id', uberProyectos.map(p => p.id))
+    .gte('created_at', twoMonthsAgo.toISOString());
+
+  // Cargar presupuestos de los 3 Uber
+  const { data: presups } = await db
+    .from('presupuestos')
+    .select('*')
+    .in('proyecto_id', uberProyectos.map(p => p.id));
+
+  // Organizar datos por proyecto
+  const result = {};
+  uberProyectos.forEach(p => {
+    result[p.nombre] = {
+      id: p.id,
+      presupuestos: {},
+      gastos: {}
+    };
+    LINEAS.forEach(l => {
+      result[p.nombre].presupuestos[l] = 0;
+      result[p.nombre].gastos[l] = 0;
+    });
+  });
+
+  // Llenar presupuestos
+  (presups || []).forEach(b => {
+    const proy = uberProyectos.find(p => p.id === b.proyecto_id);
+    if (proy) result[proy.nombre].presupuestos[b.linea] = b.monto;
+  });
+
+  // Calcular gastos desde pedidos enviados
+  (pedidos || []).forEach(pedido => {
+    const nombre = pedido.proyectos?.nombre;
+    if (!nombre || !result[nombre]) return;
+    (pedido.pedido_items || []).forEach(item => {
+      result[nombre].gastos[item.linea] = (result[nombre].gastos[item.linea] || 0) + item.precio * item.cantidad;
+    });
+  });
+
+  return result;
+}
+
+function renderUberConsolidado(data, containerId) {
+  const container = document.getElementById(containerId);
+  if (!data || !container) return;
+
+  const lineaColors = { EPP: 'var(--epp)', Quimicos: 'var(--quim)', Suministros: 'var(--sum)', Uniformes: 'var(--uni)', Overhead: 'var(--over)' };
+
+  // Calcular totales consolidados
+  const consolidado = {};
+  LINEAS.forEach(l => { consolidado[l] = { gasto: 0, presup: 0 }; });
+  Object.values(data).forEach(proy => {
+    LINEAS.forEach(l => {
+      consolidado[l].gasto += proy.gastos[l] || 0;
+      consolidado[l].presup += proy.presupuestos[l] || 0;
+    });
+  });
+
+  let html = '';
+
+  // Tabla por proyecto
+  html += `<div style="overflow-x:auto;margin-bottom:16px;">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);">
+          <th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:11px;text-transform:uppercase;">Línea</th>
+          ${UBER_PROYECTOS.map(n => `<th style="text-align:right;padding:6px 8px;color:var(--muted);font-size:11px;text-transform:uppercase;">${n.replace('UBER ','').replace('Uber ','')}</th>`).join('')}
+          <th style="text-align:right;padding:6px 8px;color:var(--muted);font-size:11px;text-transform:uppercase;background:var(--accent-light);">TOTAL</th>
+          <th style="text-align:right;padding:6px 8px;color:var(--muted);font-size:11px;text-transform:uppercase;">Presup.</th>
+        </tr>
+      </thead>
+      <tbody>`;
+
+  LINEAS.forEach(linea => {
+    const c = consolidado[linea];
+    const pct = c.presup > 0 ? Math.min(100, (c.gasto / c.presup) * 100) : 0;
+    const over = c.gasto > c.presup && c.presup > 0;
+    html += `<tr style="border-bottom:1px solid var(--border);">
+      <td style="padding:6px 8px;"><span style="font-size:10px;font-weight:600;color:${lineaColors[linea]};">${LABELS[linea]}</span></td>
+      ${UBER_PROYECTOS.map(n => {
+        const g = data[n]?.gastos[linea] || 0;
+        return `<td style="text-align:right;padding:6px 8px;font-family:'DM Mono',monospace;font-size:11px;">₡${fmtNum(g)}</td>`;
+      }).join('')}
+      <td style="text-align:right;padding:6px 8px;font-family:'DM Mono',monospace;font-size:11px;font-weight:600;background:var(--accent-light);color:${over ? 'var(--danger)' : 'var(--accent)'};">₡${fmtNum(c.gasto)}</td>
+      <td style="text-align:right;padding:6px 8px;font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);">₡${c.presup > 0 ? fmtNum(c.presup) : '—'}</td>
+    </tr>`;
+  });
+
+  const totalGasto = Object.values(consolidado).reduce((s, l) => s + l.gasto, 0);
+  const totalPresup = Object.values(consolidado).reduce((s, l) => s + l.presup, 0);
+
+  html += `<tr style="border-top:2px solid var(--border);background:var(--bg);">
+    <td style="padding:7px 8px;font-weight:600;font-size:12px;">TOTAL</td>
+    ${UBER_PROYECTOS.map(n => {
+      const g = LINEAS.reduce((s, l) => s + (data[n]?.gastos[l] || 0), 0);
+      return `<td style="text-align:right;padding:7px 8px;font-family:'DM Mono',monospace;font-size:11px;font-weight:600;">₡${fmtNum(g)}</td>`;
+    }).join('')}
+    <td style="text-align:right;padding:7px 8px;font-family:'DM Mono',monospace;font-size:12px;font-weight:700;background:var(--accent-light);color:var(--accent);">₡${fmtNum(totalGasto)}</td>
+    <td style="text-align:right;padding:7px 8px;font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);">₡${fmtNum(totalPresup)}</td>
+  </tr>`;
+
+  html += `</tbody></table></div>`;
+
+  // Alertas si alguna línea se pasó
+  const alertas = LINEAS.filter(l => consolidado[l].gasto > consolidado[l].presup && consolidado[l].presup > 0);
+  if (alertas.length) {
+    html += `<div style="background:var(--danger-light);border:1px solid var(--danger);border-radius:var(--radius);padding:10px 12px;">`;
+    html += `<div style="font-size:12px;font-weight:600;color:var(--danger);margin-bottom:6px;">⚠ Exceso de presupuesto consolidado</div>`;
+    alertas.forEach(l => {
+      const exceso = consolidado[l].gasto - consolidado[l].presup;
+      html += `<div style="font-size:11px;color:var(--danger);margin-bottom:3px;">${LABELS[l]}: excede en ₡${fmtNum(exceso)}</div>`;
+    });
+    html += `</div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+async function loadAndRenderUberConsolidado(containerId) {
+  const data = await loadUberConsolidado();
+  renderUberConsolidado(data, containerId);
+}
+
 async function loadAdminData() {
   await loadProductos();
   renderAdminTable();
   await loadBudgetAdmin();
   await loadAdminHistory();
   await renderUsersTable();
+  await loadAndRenderUberConsolidado('admin-uber-content');
 }
 
 function renderAdminTable() {
