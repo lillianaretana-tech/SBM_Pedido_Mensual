@@ -1579,7 +1579,9 @@ function toggleAdmin() {
     adminView = false;
     document.getElementById('admin-screen').style.display = 'none';
     document.getElementById('app-screen').style.display = 'block';
-    document.getElementById('btn-admin-toggle').style.display = 'block';
+    if (currentUser.rol === 'admin') {
+      document.getElementById('btn-admin-toggle').style.display = 'block';
+    }
     document.getElementById('btn-volver').style.display = 'none';
   }
 }
