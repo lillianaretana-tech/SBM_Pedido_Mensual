@@ -784,9 +784,8 @@
     <div style="margin-bottom:12px;">
       <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Rol</label>
       <select id="user-modal-rol" onchange="toggleProyectoField()" style="width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:var(--radius); font-family:'DM Sans',sans-serif; font-size:14px; color:var(--text); background:var(--bg); outline:none; color-scheme:dark;">
-       <option value="supervisor">Supervisor</option>
-       <option value="funcionario">Funcionario</option>
-       <option value="admin">Admin</option>
+        <option value="supervisor">Supervisor</option>
+        <option value="admin">Admin</option>
       </select>
     </div>
     <div style="margin-bottom:20px;" id="user-modal-proyecto-wrap">
@@ -1305,14 +1304,21 @@ function renderHistorial(pedidos) {
   container.innerHTML = pedidos.map(p => {
     const fecha = new Date(p.created_at).toLocaleDateString('es-CR', { day: '2-digit', month: 'short', year: 'numeric' });
     const items = p.pedido_items ? p.pedido_items.length : 0;
+    const esBorrador = p.estado === 'borrador';
+    const badgeColor = esBorrador ? 'background:var(--warning-light);color:var(--warning)' : 'background:var(--accent-light);color:var(--accent)';
+    const badgeText = esBorrador ? '⏳ Borrador' : '✓ Aprobado';
     return `
       <div class="history-item">
         <div class="history-header">
           <span class="history-title">${fecha}</span>
           <span class="history-total">₡${fmtNum(p.total)}</span>
         </div>
-        <div class="history-meta" style="margin-bottom:6px;">${items} item${items !== 1 ? 's' : ''} · ${p.estado}</div>
-        <div style="display:flex;gap:6px;">
+        <div class="history-meta" style="margin-bottom:6px;">
+          ${items} item${items !== 1 ? 's' : ''} &nbsp;·&nbsp;
+          <span class="linea-badge" style="${badgeColor}">${badgeText}</span>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          ${esBorrador ? `<button onclick="editarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--accent);border-radius:6px;background:transparent;color:var(--accent);font-size:11px;cursor:pointer;">✏️ Editar</button>` : ''}
           <button onclick="exportPedidoExcel('${p.id}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-size:11px;cursor:pointer;">📊 Excel</button>
           <button onclick="exportPedidoPDF('${p.id}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-size:11px;cursor:pointer;">📄 PDF</button>
           <button onclick="eliminarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--danger);border-radius:6px;background:transparent;color:var(--danger);font-size:11px;cursor:pointer;">Eliminar</button>
@@ -1322,7 +1328,166 @@ function renderHistorial(pedidos) {
   }).join('');
 }
 
-async function eliminarPedido(pedidoId) {
+async function editarPedido(pedidoId) {
+  const p = await getPedidoData(pedidoId);
+  if (!p) return;
+
+  // Cargar items del pedido en el panel actual
+  const proy = proyectos.find(pr => pr.id === p.proyecto_id);
+  if (!proy) return;
+
+  // Cambiar al proyecto correcto
+  const sel = document.getElementById('select-proyecto');
+  if (sel) {
+    sel.value = proy.id;
+    currentProyectoId = proy.id;
+    await loadPresupuestos(currentProyectoId);
+  }
+
+  // Cargar items
+  orderItems = (p.pedido_items || []).map(i => ({
+    id: Date.now() + Math.random(),
+    producto_id: i.producto_id,
+    codigo: i.codigo,
+    descripcion: i.descripcion,
+    linea: i.linea,
+    precio: i.precio,
+    cantidad: i.cantidad,
+    es_gasto: i.es_gasto,
+    talla: null,
+    color: null,
+    pedido_id_origen: pedidoId // referencia al pedido original
+  }));
+
+  // Cargar notas
+  const notasEl = document.getElementById('pedido-notas');
+  if (notasEl) notasEl.value = p.notas || '';
+
+  renderOrder();
+  renderBudget();
+
+  // Cambiar botón a "Actualizar borrador"
+  const btn = document.getElementById('btn-send');
+  btn.disabled = false;
+  btn.textContent = 'Actualizar borrador';
+  btn.style.background = '';
+  btn.onclick = () => actualizarPedido(pedidoId);
+
+  // Si estamos en admin, volver a la vista de pedidos
+  if (adminView) toggleAdmin();
+
+  showToast(`Pedido de ${proy.nombre} cargado para edición`, 'success');
+}
+
+async function actualizarPedido(pedidoId) {
+  if (!orderItems.length) return;
+
+  const btn = document.getElementById('btn-send');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Guardando...';
+
+  const total = orderItems.reduce((s, i) => s + i.precio * i.cantidad, 0);
+  const notas = document.getElementById('pedido-notas').value.trim();
+
+  try {
+    // Borrar items anteriores y reemplazar
+    await db.from('pedido_items').delete().eq('pedido_id', pedidoId);
+    await db.from('pedido_items').insert(orderItems.map(i => ({
+      pedido_id: pedidoId,
+      producto_id: i.producto_id,
+      codigo: i.codigo,
+      descripcion: i.descripcion,
+      linea: i.linea,
+      precio: i.precio,
+      cantidad: i.cantidad,
+      es_gasto: i.es_gasto || false
+    })));
+    await db.from('pedidos').update({ total, notas, updated_at: new Date().toISOString() }).eq('id', pedidoId);
+
+    showToast('Borrador actualizado', 'success');
+    btn.textContent = '✓ Actualizado';
+    btn.style.background = 'var(--muted)';
+
+    // Restaurar botón original
+    setTimeout(() => {
+      btn.textContent = 'Enviar pedido';
+      btn.style.background = '';
+      btn.onclick = enviarPedido;
+      btn.disabled = orderItems.length === 0;
+    }, 2000);
+
+    await loadHistorial(currentProyectoId);
+  } catch(e) {
+    console.error(e);
+    showToast('Error al actualizar el pedido', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Actualizar borrador';
+  }
+}
+
+async function aprobarPedido(pedidoId) {
+  const p = await getPedidoData(pedidoId);
+  if (!p) return;
+
+  const proyecto = proyectos.find(pr => pr.id === p.proyecto_id);
+  const fecha = new Date(p.created_at).toLocaleDateString('es-CR', { day: '2-digit', month: 'long', year: 'numeric' });
+  const lineas = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
+  const labels = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
+
+  // Construir email final aprobado
+  let emailHtml = `<div style="font-family:sans-serif;font-size:13px;">`;
+  emailHtml += `<h2 style="color:#1a6b4a;">✅ Pedido Aprobado — ${proyecto?.nombre}</h2>`;
+  emailHtml += `<p style="color:#666;">Fecha original: ${fecha} &nbsp;|&nbsp; Aprobado por: ${currentUser.nombre}</p><hr/>`;
+
+  lineas.forEach(linea => {
+    const items = (p.pedido_items || []).filter(i => i.linea === linea);
+    if (!items.length) return;
+    emailHtml += `<h3 style="color:#333;margin-top:16px;">${labels[linea]}</h3>`;
+    emailHtml += `<table style="width:100%;border-collapse:collapse;font-size:12px;">`;
+    emailHtml += `<thead><tr style="background:#f0f0f0;">
+      <th style="text-align:left;padding:6px 8px;border:1px solid #ddd;">Código</th>
+      <th style="text-align:left;padding:6px 8px;border:1px solid #ddd;">Descripción</th>
+      <th style="text-align:right;padding:6px 8px;border:1px solid #ddd;">Precio Unit.</th>
+      <th style="text-align:center;padding:6px 8px;border:1px solid #ddd;">Cant.</th>
+      <th style="text-align:right;padding:6px 8px;border:1px solid #ddd;">Subtotal</th>
+    </tr></thead><tbody>`;
+    items.forEach(i => {
+      emailHtml += `<tr>
+        <td style="padding:5px 8px;border:1px solid #ddd;color:#666;">${i.codigo}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;">${i.descripcion}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;text-align:right;">₡${fmtNum(i.precio)}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;text-align:center;">${i.cantidad}</td>
+        <td style="padding:5px 8px;border:1px solid #ddd;text-align:right;font-weight:600;">₡${fmtNum(i.precio*i.cantidad)}</td>
+      </tr>`;
+    });
+    emailHtml += `</tbody></table>`;
+  });
+
+  emailHtml += `<hr style="margin-top:16px;"/>`;
+  emailHtml += `<p style="font-size:15px;font-weight:bold;color:#1a6b4a;">TOTAL PEDIDO: ₡${fmtNum(p.total)}</p>`;
+  if (p.notas) emailHtml += `<p style="background:#fffbe6;padding:10px;border-left:3px solid #f0a050;"><strong>Observaciones:</strong> ${p.notas}</p>`;
+  emailHtml += `</div>`;
+
+  try {
+    // Actualizar estado a aprobado
+    await db.from('pedidos').update({ estado: 'aprobado' }).eq('id', pedidoId);
+
+    // Enviar email final
+    await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+      proyecto: proyecto?.nombre,
+      fecha: fecha,
+      name: currentUser.nombre,
+      mensaje: emailHtml,
+      to_email: 'Lretana@sbmcorp.com'
+    });
+
+    showToast('¡Pedido aprobado y enviado!', 'success');
+    await loadAdminHistory();
+  } catch(e) {
+    console.error(e);
+    showToast('Error al aprobar el pedido', 'error');
+  }
+}
   if (!confirm('¿Eliminar este pedido?')) return;
   await db.from('pedido_items').delete().eq('pedido_id', pedidoId);
   await db.from('pedidos').delete().eq('id', pedidoId);
@@ -1512,16 +1677,44 @@ async function enviarPedido() {
   const lineas = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
   const labels = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
 
-  // Construir cuerpo del email en HTML para mejor visualización
-  let emailHtml = `<div style="font-family:monospace;font-size:13px;">`;
-  emailHtml += `<h2 style="font-family:sans-serif;color:#1a6b4a;">Pedido de Suministros — ${proyecto.nombre}</h2>`;
-  emailHtml += `<p style="font-family:sans-serif;color:#666;">Fecha: ${fecha} &nbsp;|&nbsp; Supervisor: ${currentUser.nombre}</p>`;
+  // Guardar en Supabase como BORRADOR
+  let pedidoId = null;
+  try {
+    const { data: pedido, error: pedErr } = await db.from('pedidos').insert({
+      proyecto_id: currentProyectoId,
+      supervisor_id: currentUser.id,
+      estado: 'borrador',
+      total: total,
+      notas: notas
+    }).select().single();
+
+    if (!pedErr && pedido) {
+      pedidoId = pedido.id;
+      const itemsToInsert = orderItems.map(i => ({
+        pedido_id: pedido.id,
+        producto_id: i.producto_id,
+        codigo: i.codigo,
+        descripcion: i.descripcion + (i.talla ? ` [Talla: ${i.talla}${i.color ? ' / Color: ' + i.color : ''}]` : ''),
+        linea: i.linea,
+        precio: i.precio,
+        cantidad: i.cantidad,
+        es_gasto: i.es_gasto
+      }));
+      await db.from('pedido_items').insert(itemsToInsert);
+    }
+  } catch(e) { console.warn('Error guardando pedido:', e); }
+
+  // Email de notificación — avisa que llegó un borrador
+  let emailHtml = `<div style="font-family:sans-serif;font-size:13px;">`;
+  emailHtml += `<h2 style="color:#e67e22;">📋 Nuevo borrador recibido — ${proyecto.nombre}</h2>`;
+  emailHtml += `<p style="color:#666;">Fecha: ${fecha} &nbsp;|&nbsp; Enviado por: ${currentUser.nombre}</p>`;
+  emailHtml += `<p style="color:#666;"><strong>${orderItems.length} productos</strong> &nbsp;|&nbsp; Total estimado: <strong>₡${fmtNum(total)}</strong></p>`;
   emailHtml += `<hr/>`;
 
   lineas.forEach(linea => {
     const items = orderItems.filter(i => i.linea === linea);
     if (!items.length) return;
-    emailHtml += `<h3 style="font-family:sans-serif;color:#333;margin-top:16px;">${labels[linea]}</h3>`;
+    emailHtml += `<h3 style="color:#333;margin-top:16px;">${labels[linea]}</h3>`;
     emailHtml += `<table style="width:100%;border-collapse:collapse;font-size:12px;">`;
     emailHtml += `<thead><tr style="background:#f0f0f0;">
       <th style="text-align:left;padding:6px 8px;border:1px solid #ddd;">Código</th>
@@ -1544,69 +1737,28 @@ async function enviarPedido() {
   });
 
   emailHtml += `<hr style="margin-top:16px;"/>`;
-  emailHtml += `<p style="font-family:sans-serif;font-size:15px;font-weight:bold;">TOTAL PEDIDO: ₡${fmtNum(total)}</p>`;
-  if (notas) emailHtml += `<p style="font-family:sans-serif;background:#fffbe6;padding:10px;border-left:3px solid #f0a050;"><strong>Observaciones:</strong> ${notas}</p>`;
+  emailHtml += `<p style="font-size:15px;font-weight:bold;">TOTAL: ₡${fmtNum(total)}</p>`;
+  if (notas) emailHtml += `<p style="background:#fffbe6;padding:10px;border-left:3px solid #f0a050;"><strong>Observaciones:</strong> ${notas}</p>`;
+  emailHtml += `<p style="color:#e67e22;font-size:12px;">⚠ Este es un BORRADOR pendiente de revisión y aprobación.</p>`;
   emailHtml += `</div>`;
 
-  // Guardar en Supabase
-  let pedidoId = null;
   try {
-    const { data: pedido, error: pedErr } = await db.from('pedidos').insert({
-      proyecto_id: currentProyectoId,
-      supervisor_id: currentUser.id || '00000000-0000-0000-0000-000000000001',
-      estado: 'enviado',
-      total: total,
-      notas: notas
-    }).select().single();
-
-    if (!pedErr && pedido) {
-      pedidoId = pedido.id;
-      const itemsToInsert = orderItems.map(i => ({
-        pedido_id: pedido.id,
-        producto_id: i.producto_id,
-        codigo: i.codigo,
-        descripcion: i.descripcion + (i.talla ? ` [Talla: ${i.talla}${i.color ? ' / Color: ' + i.color : ''}]` : ''),
-        linea: i.linea,
-        precio: i.precio,
-        cantidad: i.cantidad,
-        es_gasto: i.es_gasto
-      }));
-      await db.from('pedido_items').insert(itemsToInsert);
-    }
-  } catch(e) { console.warn('Error guardando pedido:', e); }
-
-  // Enviar email
-  try {
-    const emailData = {
-      proyecto: proyecto.nombre,
+    await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+      proyecto: `BORRADOR - ${proyecto.nombre}`,
       fecha: fecha,
       name: currentUser.nombre,
-      mensaje: emailHtml
-    };
-
-    // Primer email — correo SBM corporativo
-    await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
-      ...emailData,
+      mensaje: emailHtml,
       to_email: 'Lretana@sbmcorp.com'
     });
-
-    // Segundo email — Gmail personal como respaldo
-    try {
-      await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
-        ...emailData,
-        to_email: 'lilliana.retana@gmail.com'
-      });
-    } catch(e2) {
-      console.warn('No se pudo enviar copia a Gmail:', e2);
-    }
-
-    showToast('¡Pedido enviado! Quedó guardado en el historial.', 'success');
-    document.getElementById('btn-send').textContent = '✓ Pedido enviado';
+    showToast('¡Borrador guardado! Se envió aviso por email.', 'success');
+    document.getElementById('btn-send').textContent = '✓ Borrador enviado';
     document.getElementById('btn-send').style.background = 'var(--muted)';
     await loadHistorial(currentProyectoId);
   } catch(e) {
     console.error('EmailJS error:', e);
-    showToast('Pedido guardado pero error al enviar email: ' + (e.text || e.message || 'error desconocido'), 'error');
+    showToast('Borrador guardado pero error al enviar aviso: ' + (e.text || e.message || ''), 'error');
+    btn.textContent = '✓ Borrador guardado';
+    btn.style.background = 'var(--muted)';
   }
 
   btn.disabled = false;
@@ -1883,18 +2035,29 @@ async function loadAdminHistory() {
 
   container.innerHTML = `
     <table class="admin-table">
-      <thead><tr><th>Fecha</th><th>Proyecto</th><th>Supervisor</th><th>Items</th><th style="text-align:right;">Total</th><th>Estado</th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Proyecto</th><th>Items</th><th style="text-align:right;">Total</th><th>Estado</th><th>Acciones</th></tr></thead>
       <tbody>
-        ${data.map(p => `
+        ${data.map(p => {
+          const esBorrador = p.estado === 'borrador';
+          const badgeStyle = esBorrador ? 'background:var(--warning-light);color:var(--warning)' : 'background:var(--accent-light);color:var(--accent)';
+          return `
           <tr>
             <td>${new Date(p.created_at).toLocaleDateString('es-CR')}</td>
             <td>${p.proyectos?.nombre || '—'}</td>
-            <td style="color:var(--muted);font-size:12px;">—</td>
             <td>${p.pedido_items?.length || 0}</td>
             <td style="text-align:right;font-family:'DM Mono',monospace;">₡${fmtNum(p.total)}</td>
-            <td><span class="linea-badge" style="background:var(--accent-light);color:var(--accent);">${p.estado}</span></td>
-          </tr>
-        `).join('')}
+            <td><span class="linea-badge" style="${badgeStyle}">${esBorrador ? '⏳ Borrador' : '✓ Aprobado'}</span></td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 8px;">
+              ${esBorrador ? `
+                <button onclick="editarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--accent);border-radius:6px;background:transparent;color:var(--accent);font-size:11px;cursor:pointer;">✏️ Editar</button>
+                <button onclick="aprobarPedido('${p.id}')" style="padding:3px 10px;border:none;border-radius:6px;background:var(--accent);color:white;font-size:11px;cursor:pointer;">✅ Aprobar</button>
+              ` : ''}
+              <button onclick="exportPedidoExcel('${p.id}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-size:11px;cursor:pointer;">📊 Excel</button>
+              <button onclick="exportPedidoPDF('${p.id}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-size:11px;cursor:pointer;">📄 PDF</button>
+              <button onclick="eliminarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--danger);border-radius:6px;background:transparent;color:var(--danger);font-size:11px;cursor:pointer;">🗑</button>
+            </td>
+          </tr>`;
+        }).join('')}
       </tbody>
     </table>
   `;
@@ -2149,28 +2312,32 @@ async function enviarSolicitud() {
     const { data: pedido } = await db.from('pedidos').insert({
       proyecto_id: proyecto?.id,
       supervisor_id: currentUser.id,
-      estado: 'enviado',
+      estado: 'borrador',
       total: 0,
       notas: notas
     }).select().single();
 
     if (pedido) {
-      await db.from('pedido_items').insert(funcItems.map(i => ({
-        pedido_id: pedido.id,
-        producto_id: i.producto_id,
-        codigo: i.codigo,
-        descripcion: i.descripcion,
-        linea: i.linea,
-        precio: 0,
-        cantidad: i.cantidad,
-        es_gasto: false
-      })));
+      // Buscar precio real de cada producto del catálogo
+      await db.from('pedido_items').insert(funcItems.map(i => {
+        const prod = productos.find(p => p.id === i.producto_id);
+        return {
+          pedido_id: pedido.id,
+          producto_id: i.producto_id,
+          codigo: i.codigo,
+          descripcion: i.descripcion,
+          linea: i.linea,
+          precio: prod?.precio || 0,
+          cantidad: i.cantidad,
+          es_gasto: false
+        };
+      }));
     }
   } catch(e) { console.warn('Error guardando solicitud:', e); }
 
-  // Email
+  // Email de notificación
   let emailHtml = `<div style="font-family:sans-serif;font-size:13px;">`;
-  emailHtml += `<h2 style="color:#1a6b4a;">Solicitud de Suministros — ${proyecto?.nombre || currentUser.proyecto_nombre}</h2>`;
+  emailHtml += `<h2 style="color:#e67e22;">📋 Nueva solicitud (borrador) — ${proyecto?.nombre || currentUser.proyecto_nombre}</h2>`;
   emailHtml += `<p style="color:#666;">Fecha: ${fecha} &nbsp;|&nbsp; Solicitante: ${currentUser.nombre}</p><hr/>`;
   emailHtml += `<table style="width:100%;border-collapse:collapse;font-size:12px;">`;
   emailHtml += `<thead><tr style="background:#f0f0f0;">
@@ -2191,25 +2358,27 @@ async function enviarSolicitud() {
 
   emailHtml += `</tbody></table>`;
   if (notas) emailHtml += `<p style="background:#fffbe6;padding:10px;border-left:3px solid #f0a050;margin-top:12px;"><strong>Observaciones:</strong> ${notas}</p>`;
+  emailHtml += `<p style="color:#e67e22;font-size:12px;margin-top:12px;">⚠ Este es un BORRADOR pendiente de revisión y aprobación.</p>`;
   emailHtml += `</div>`;
 
   try {
     await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
-      proyecto: proyecto?.nombre || currentUser.proyecto_nombre,
+      proyecto: `BORRADOR - ${proyecto?.nombre || currentUser.proyecto_nombre}`,
       fecha: fecha,
       name: currentUser.nombre,
       mensaje: emailHtml,
       to_email: 'Lretana@sbmcorp.com'
     });
-    showToast('¡Solicitud enviada!', 'success');
+    showToast('¡Solicitud guardada! Se envió aviso por email.', 'success');
     btn.textContent = '✓ Solicitud enviada';
     btn.style.background = 'var(--muted)';
     document.getElementById('func-notas').value = '';
   } catch(e) {
     console.error('EmailJS error:', e);
-    showToast('Solicitud guardada pero error al enviar email', 'error');
+    showToast('Solicitud guardada pero error al enviar aviso', 'error');
+    btn.textContent = '✓ Solicitud guardada';
+    btn.style.background = 'var(--muted)';
     btn.disabled = false;
-    btn.textContent = 'Enviar solicitud';
   }
 }
 
