@@ -851,6 +851,7 @@ let orderItems = [];
 let currentProyectoId = null;
 let adminView = false;
 let sbmUsuarios = []; // usuarios desde Supabase
+let editingPedidoEstado = null;
 
 // ══════════════════════════════════════════
 //  LOGIN (desde Supabase)
@@ -1206,6 +1207,33 @@ function removeItem(itemId) {
   renderBudget();
 }
 
+function escapeAttr(value) {
+  return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function parseItemDescription(desc) {
+  const text = String(desc || '');
+  const match = text.match(/^(.*?)\s*\[Detalle:\s*(.*?)\]\s*$/i);
+  return {
+    descripcion: match ? match[1].trim() : text,
+    detalle: match ? match[2].trim() : ''
+  };
+}
+
+function buildItemDescription(item) {
+  const extras = [];
+  if (item.talla) extras.push(`Talla: ${item.talla}`);
+  if (item.color) extras.push(`Color: ${item.color}`);
+  if ((item.detalle || '').trim()) extras.push(`Detalle: ${item.detalle.trim()}`);
+  return item.descripcion + (extras.length ? ` [${extras.join(' / ')}]` : '');
+}
+
+function setItemDetalle(itemId, value) {
+  const item = orderItems.find(i => i.id === itemId);
+  if (!item || !isAdmin()) return;
+  item.detalle = value.trim();
+}
+
 function renderOrder() {
   const tbody = document.getElementById('order-tbody');
   const empty = document.getElementById('order-empty');
@@ -1239,6 +1267,7 @@ function renderOrder() {
       <td style="max-width:200px;" title="${item.descripcion}">
         <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.descripcion}</div>
         ${item.talla ? `<div style="font-size:11px;color:var(--muted);margin-top:2px;">Talla: ${item.talla}${item.color ? ' · Color: ' + item.color : ''}</div>` : ''}
+        ${isAdmin() ? `<input type="text" value="${escapeAttr(item.detalle || '')}" placeholder="Detalle: color, tamaño..." oninput="setItemDetalle(${item.id}, this.value)" style="width:100%;margin-top:6px;padding:5px 7px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:11px;outline:none;" />` : ''}
       </td>
       <td><span class="linea-badge linea-${item.linea}">${item.linea}</span></td>
       <td>
@@ -1331,6 +1360,11 @@ function renderHistorial(pedidos) {
 async function editarPedido(pedidoId) {
   const p = await getPedidoData(pedidoId);
   if (!p) return;
+  if (p.estado !== 'borrador' && !isAdmin()) {
+    showToast('Solo ADMIN puede editar pedidos aprobados', 'warning');
+    return;
+  }
+  editingPedidoEstado = p.estado;
 
   // Cargar items del pedido en el panel actual
   const proy = proyectos.find(pr => pr.id === p.proyecto_id);
@@ -1345,19 +1379,23 @@ async function editarPedido(pedidoId) {
   }
 
   // Cargar items
-  orderItems = (p.pedido_items || []).map(i => ({
-    id: Date.now() + Math.random(),
-    producto_id: i.producto_id,
-    codigo: i.codigo,
-    descripcion: i.descripcion,
-    linea: i.linea,
-    precio: i.precio,
-    cantidad: i.cantidad,
-    es_gasto: i.es_gasto,
-    talla: null,
-    color: null,
-    pedido_id_origen: pedidoId // referencia al pedido original
-  }));
+  orderItems = (p.pedido_items || []).map(i => {
+    const parsed = parseItemDescription(i.descripcion);
+    return {
+      id: Date.now() + Math.random(),
+      producto_id: i.producto_id,
+      codigo: i.codigo,
+      descripcion: parsed.descripcion,
+      detalle: parsed.detalle,
+      linea: i.linea,
+      precio: i.precio,
+      cantidad: i.cantidad,
+      es_gasto: i.es_gasto,
+      talla: null,
+      color: null,
+      pedido_id_origen: pedidoId // referencia al pedido original
+    };
+  });
 
   // Cargar notas
   const notasEl = document.getElementById('pedido-notas');
@@ -1366,10 +1404,10 @@ async function editarPedido(pedidoId) {
   renderOrder();
   renderBudget();
 
-  // Cambiar botón a "Actualizar borrador"
+  // Cambiar botón de actualización según el estado original
   const btn = document.getElementById('btn-send');
   btn.disabled = false;
-  btn.textContent = 'Actualizar borrador';
+  btn.textContent = p.estado === 'aprobado' ? 'Actualizar pedido aprobado' : 'Actualizar borrador';
   btn.style.background = '';
   btn.onclick = () => actualizarPedido(pedidoId);
 
@@ -1396,7 +1434,7 @@ async function actualizarPedido(pedidoId) {
       pedido_id: pedidoId,
       producto_id: i.producto_id,
       codigo: i.codigo,
-      descripcion: i.descripcion,
+      descripcion: buildItemDescription(i),
       linea: i.linea,
       precio: i.precio,
       cantidad: i.cantidad,
@@ -1404,7 +1442,7 @@ async function actualizarPedido(pedidoId) {
     })));
     await db.from('pedidos').update({ total, notas, updated_at: new Date().toISOString() }).eq('id', pedidoId);
 
-    showToast('Borrador actualizado', 'success');
+    showToast(editingPedidoEstado === 'aprobado' ? 'Pedido aprobado actualizado' : 'Borrador actualizado', 'success');
     btn.textContent = '✓ Actualizado';
     btn.style.background = 'var(--muted)';
 
@@ -1414,6 +1452,7 @@ async function actualizarPedido(pedidoId) {
       btn.style.background = '';
       btn.onclick = enviarPedido;
       btn.disabled = orderItems.length === 0;
+      editingPedidoEstado = null;
     }, 2000);
 
     await loadHistorial(currentProyectoId);
@@ -1421,7 +1460,7 @@ async function actualizarPedido(pedidoId) {
     console.error(e);
     showToast('Error al actualizar el pedido', 'error');
     btn.disabled = false;
-    btn.textContent = 'Actualizar borrador';
+    btn.textContent = editingPedidoEstado === 'aprobado' ? 'Actualizar pedido aprobado' : 'Actualizar borrador';
   }
 }
 
@@ -1696,7 +1735,7 @@ async function enviarPedido() {
         pedido_id: pedido.id,
         producto_id: i.producto_id,
         codigo: i.codigo,
-        descripcion: i.descripcion + (i.talla ? ` [Talla: ${i.talla}${i.color ? ' / Color: ' + i.color : ''}]` : ''),
+        descripcion: buildItemDescription(i),
         linea: i.linea,
         precio: i.precio,
         cantidad: i.cantidad,
@@ -2050,8 +2089,8 @@ async function loadAdminHistory() {
             <td style="text-align:right;font-family:'DM Mono',monospace;">₡${fmtNum(p.total)}</td>
             <td><span class="linea-badge" style="${badgeStyle}">${esBorrador ? '⏳ Borrador' : '✓ Aprobado'}</span></td>
             <td style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 8px;">
+              <button onclick="editarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--accent);border-radius:6px;background:transparent;color:var(--accent);font-size:11px;cursor:pointer;">✏️ Editar</button>
               ${esBorrador ? `
-                <button onclick="editarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--accent);border-radius:6px;background:transparent;color:var(--accent);font-size:11px;cursor:pointer;">✏️ Editar</button>
                 <button onclick="aprobarPedido('${p.id}')" style="padding:3px 10px;border:none;border-radius:6px;background:var(--accent);color:white;font-size:11px;cursor:pointer;">✅ Aprobar</button>
               ` : ''}
               <button onclick="exportPedidoExcel('${p.id}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);font-size:11px;cursor:pointer;">📊 Excel</button>
