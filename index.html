@@ -436,6 +436,22 @@
     cursor: pointer;
     display: none;
   }
+  .row-actions { display: flex; gap: 6px; justify-content: center; align-items: center; }
+  .btn-row {
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    transition: all 0.12s;
+    white-space: nowrap;
+  }
+  .btn-row:hover { background: var(--surface); border-color: var(--accent); }
+  .btn-row.danger:hover { border-color: var(--danger); color: var(--danger); }
 
   /* BUDGET ADMIN */
   .budget-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
@@ -712,14 +728,21 @@
       <div class="card">
         <div class="card-title">
           Productos del catálogo
-          <div class="search-wrap" style="margin:0;width:220px;">
-            <span class="search-icon">🔍</span>
-            <input type="text" id="admin-search" placeholder="Filtrar..." oninput="filterAdminTable()" style="padding-left:32px;" />
+          <div style="display:flex; align-items:center; gap:10px;">
+            <label style="display:flex; align-items:center; gap:6px; font-size:12px; font-weight:500; color:var(--muted); text-transform:none; letter-spacing:0; cursor:pointer; white-space:nowrap;">
+              <input type="checkbox" id="admin-show-inactive" onchange="toggleInactivos()" style="cursor:pointer; accent-color:var(--accent);" />
+              Mostrar eliminados
+            </label>
+            <div class="search-wrap" style="margin:0;width:200px;">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="admin-search" placeholder="Filtrar..." oninput="filterAdminTable()" style="padding-left:32px;" />
+            </div>
+            <button class="btn-add-gasto" onclick="showProductModal()">+ Nuevo producto</button>
           </div>
         </div>
         <div style="overflow-x:auto;">
           <table class="admin-table" id="admin-table">
-            <thead><tr><th>Código</th><th>Descripción</th><th>Línea</th><th style="text-align:right;">Precio</th><th></th></tr></thead>
+            <thead><tr><th>Código</th><th>Descripción</th><th>Línea</th><th style="text-align:right;">Precio</th><th style="text-align:center;">Acciones</th></tr></thead>
             <tbody id="admin-tbody"></tbody>
           </table>
         </div>
@@ -801,6 +824,40 @@
   </div>
 </div>
 
+<!-- MODAL PRODUCTO -->
+<div id="product-modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:500; align-items:center; justify-content:center;">
+  <div style="background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:28px; width:400px; box-shadow:var(--shadow);">
+    <div style="font-size:15px; font-weight:600; margin-bottom:20px;" id="product-modal-title">Nuevo producto</div>
+    <input type="hidden" id="product-modal-id" value="" />
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Código</label>
+      <input id="product-modal-codigo" type="text" placeholder="Ej: SUM-001" style="width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:var(--radius); font-family:'DM Mono',monospace; font-size:14px; color:var(--text); background:var(--bg); outline:none; color-scheme:dark;" />
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Descripción</label>
+      <input id="product-modal-descripcion" type="text" placeholder="Nombre del producto" style="width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:var(--radius); font-family:'DM Sans',sans-serif; font-size:14px; color:var(--text); background:var(--bg); outline:none; color-scheme:dark;" />
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Línea</label>
+      <select id="product-modal-linea" style="width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:var(--radius); font-family:'DM Sans',sans-serif; font-size:14px; color:var(--text); background:var(--bg); outline:none; color-scheme:dark;">
+        <option value="EPP">EPP</option>
+        <option value="Quimicos">Químicos</option>
+        <option value="Suministros" selected>Suministros</option>
+        <option value="Uniformes">Uniformes</option>
+        <option value="Overhead">Overhead</option>
+      </select>
+    </div>
+    <div style="margin-bottom:20px;">
+      <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Precio</label>
+      <input id="product-modal-precio" type="number" min="0" step="0.01" placeholder="0.00" style="width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:var(--radius); font-family:'DM Mono',monospace; font-size:14px; color:var(--text); background:var(--bg); outline:none; color-scheme:dark;" />
+    </div>
+    <div style="display:flex; gap:10px;">
+      <button onclick="closeProductModal()" style="flex:1; padding:10px; border:1px solid var(--border); border-radius:var(--radius); background:transparent; color:var(--text); font-family:'DM Sans',sans-serif; font-size:14px; cursor:pointer;">Cancelar</button>
+      <button onclick="saveProduct()" id="product-modal-save" style="flex:1; padding:10px; border:none; border-radius:var(--radius); background:var(--accent); color:white; font-family:'DM Sans',sans-serif; font-size:14px; font-weight:600; cursor:pointer;">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL UNIFORMES -->
 <div id="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:500; align-items:center; justify-content:center;">
   <div style="background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:28px; width:340px; box-shadow:var(--shadow);">
@@ -845,6 +902,8 @@ emailjs.init(EMAILJS_PUBLIC);
 // ══════════════════════════════════════════
 let currentUser = null;
 let productos = [];
+let productosInactivos = [];
+let mostrarInactivos = false;
 let proyectos = [];
 let presupuestos = {};
 let orderItems = [];
@@ -1986,7 +2045,20 @@ async function loadAdminData() {
 
 function renderAdminTable() {
   const tbody = document.getElementById('admin-tbody');
-  tbody.innerHTML = productos.map(p => `
+  const activos = productos.map(p => rowProductoActivo(p)).join('');
+  const inactivos = (mostrarInactivos && productosInactivos.length)
+    ? productosInactivos.map(p => rowProductoInactivo(p)).join('')
+    : '';
+
+  if (!productos.length && !inactivos) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px;">No hay productos. Agregá uno con "+ Nuevo producto".</td></tr>';
+    return;
+  }
+  tbody.innerHTML = activos + inactivos;
+}
+
+function rowProductoActivo(p) {
+  return `
     <tr id="row-${p.id}">
       <td><span style="font-family:'DM Mono',monospace;font-size:12px;">${p.codigo}</span></td>
       <td>${p.descripcion}</td>
@@ -1997,10 +2069,168 @@ function renderAdminTable() {
           onblur="setTimeout(()=>document.getElementById('save-${p.id}').style.display='none',200)" />
       </td>
       <td>
-        <button class="btn-save-price" id="save-${p.id}" onclick="savePrice('${p.id}')">Guardar</button>
+        <div class="row-actions">
+          <button class="btn-save-price" id="save-${p.id}" onclick="savePrice('${p.id}')">Guardar</button>
+          <button class="btn-row" onclick="showProductModal('${p.id}')">Editar</button>
+          <button class="btn-row danger" onclick="deleteProduct('${p.id}')">Eliminar</button>
+        </div>
       </td>
     </tr>
-  `).join('');
+  `;
+}
+
+function rowProductoInactivo(p) {
+  return `
+    <tr id="row-${p.id}" style="opacity:0.55;">
+      <td><span style="font-family:'DM Mono',monospace;font-size:12px;">${p.codigo}</span></td>
+      <td>${p.descripcion} <span style="font-size:10px;font-weight:600;color:var(--danger);border:1px solid var(--danger);border-radius:20px;padding:1px 7px;margin-left:6px;">Eliminado</span></td>
+      <td><span class="linea-badge linea-${p.linea}">${p.linea}</span></td>
+      <td style="text-align:right;font-family:'DM Mono',monospace;font-size:13px;padding-right:12px;">${fmtNum(p.precio)}</td>
+      <td>
+        <div class="row-actions">
+          <button class="btn-row" style="border-color:var(--accent);color:var(--accent);" onclick="reactivarProduct('${p.id}')">↩ Reactivar</button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+async function toggleInactivos() {
+  mostrarInactivos = document.getElementById('admin-show-inactive').checked;
+
+  if (mostrarInactivos && !productosInactivos.length) {
+    const { data, error } = await db.from('productos')
+      .select('*').eq('activo', false).order('descripcion');
+    if (error) {
+      showToast('Error al cargar eliminados: ' + error.message, 'error');
+      document.getElementById('admin-show-inactive').checked = false;
+      mostrarInactivos = false;
+      return;
+    }
+    productosInactivos = data || [];
+    if (!productosInactivos.length) showToast('No hay productos eliminados', 'success');
+  }
+
+  renderAdminTable();
+}
+
+async function reactivarProduct(productoId) {
+  const p = productosInactivos.find(x => x.id === productoId);
+  if (!p) return;
+
+  try {
+    const { error } = await db.from('productos').update({ activo: true }).eq('id', productoId);
+    if (error) throw error;
+
+    productosInactivos = productosInactivos.filter(x => x.id !== productoId);
+    productos.push(p);
+    productos.sort((a, b) => (a.descripcion || '').localeCompare(b.descripcion || ''));
+    renderAdminTable();
+    showToast('Producto reactivado', 'success');
+  } catch (e) {
+    console.error('Error reactivando producto:', e);
+    showToast('Error al reactivar: ' + (e.message || ''), 'error');
+  }
+}
+
+// ── MODAL PRODUCTO (crear / editar) ──
+function showProductModal(productoId) {
+  const titulo = document.getElementById('product-modal-title');
+  document.getElementById('product-modal-id').value = productoId || '';
+
+  if (productoId) {
+    const p = productos.find(x => x.id === productoId);
+    if (!p) return;
+    titulo.textContent = 'Editar producto';
+    document.getElementById('product-modal-codigo').value = p.codigo || '';
+    document.getElementById('product-modal-descripcion').value = p.descripcion || '';
+    document.getElementById('product-modal-linea').value = p.linea || 'Suministros';
+    document.getElementById('product-modal-precio').value = p.precio ?? '';
+  } else {
+    titulo.textContent = 'Nuevo producto';
+    document.getElementById('product-modal-codigo').value = '';
+    document.getElementById('product-modal-descripcion').value = '';
+    document.getElementById('product-modal-linea').value = 'Suministros';
+    document.getElementById('product-modal-precio').value = '';
+  }
+
+  document.getElementById('product-modal-overlay').style.display = 'flex';
+}
+
+function closeProductModal() {
+  document.getElementById('product-modal-overlay').style.display = 'none';
+}
+
+async function saveProduct() {
+  const id = document.getElementById('product-modal-id').value;
+  const codigo = document.getElementById('product-modal-codigo').value.trim();
+  const descripcion = document.getElementById('product-modal-descripcion').value.trim();
+  const linea = document.getElementById('product-modal-linea').value;
+  const precio = parseFloat(document.getElementById('product-modal-precio').value);
+
+  if (!codigo) { showToast('Falta el código', 'error'); return; }
+  if (!descripcion) { showToast('Falta la descripción', 'error'); return; }
+  if (isNaN(precio) || precio < 0) { showToast('Precio inválido', 'error'); return; }
+
+  const btn = document.getElementById('product-modal-save');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Guardando...';
+
+  try {
+    if (id) {
+      // Editar existente
+      const { error } = await db.from('productos')
+        .update({ codigo, descripcion, linea, precio })
+        .eq('id', id);
+      if (error) throw error;
+
+      const prod = productos.find(p => p.id === id);
+      if (prod) { prod.codigo = codigo; prod.descripcion = descripcion; prod.linea = linea; prod.precio = precio; }
+      showToast('Producto actualizado', 'success');
+    } else {
+      // Crear nuevo
+      const { data, error } = await db.from('productos')
+        .insert({ codigo, descripcion, linea, precio, activo: true })
+        .select()
+        .single();
+      if (error) throw error;
+
+      if (data) productos.push(data);
+      showToast('Producto agregado', 'success');
+    }
+
+    productos.sort((a, b) => (a.descripcion || '').localeCompare(b.descripcion || ''));
+    renderAdminTable();
+    closeProductModal();
+  } catch (e) {
+    console.error('Error guardando producto:', e);
+    showToast('Error al guardar: ' + (e.message || ''), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Guardar';
+  }
+}
+
+async function deleteProduct(productoId) {
+  const p = productos.find(x => x.id === productoId);
+  if (!p) return;
+  if (!confirm(`¿Eliminar "${p.descripcion}" del catálogo?\n\nDejará de aparecer para hacer pedidos. Los pedidos antiguos no se afectan.`)) return;
+
+  try {
+    // Borrado lógico: se desactiva para no romper el historial
+    const { error } = await db.from('productos').update({ activo: false }).eq('id', productoId);
+    if (error) throw error;
+
+    productos = productos.filter(x => x.id !== productoId);
+    // Mantener en memoria por si se muestran los eliminados / se reactiva
+    p.activo = false;
+    if (!productosInactivos.find(x => x.id === productoId)) productosInactivos.push(p);
+    renderAdminTable();
+    showToast('Producto eliminado', 'success');
+  } catch (e) {
+    console.error('Error eliminando producto:', e);
+    showToast('Error al eliminar: ' + (e.message || ''), 'error');
+  }
 }
 
 function filterAdminTable() {
