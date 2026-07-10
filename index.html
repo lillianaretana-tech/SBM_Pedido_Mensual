@@ -655,7 +655,8 @@
 
       <!-- Historial -->
       <div class="card">
-        <div class="card-title">Historial reciente</div>
+        <div class="card-title">Historial de pedidos</div>
+        <div id="history-filter" style="margin-bottom:12px;"></div>
         <div id="history-list">
           <div class="history-empty">Sin pedidos recientes</div>
         </div>
@@ -782,7 +783,8 @@
 
     <div id="tab-historial" class="tab-content">
       <div class="card">
-        <div class="card-title">Todos los pedidos — últimos 2 meses</div>
+        <div class="card-title">Todos los pedidos — historial completo</div>
+        <div id="admin-history-filter" style="margin-bottom:12px;"></div>
         <div id="admin-history"></div>
       </div>
     </div>
@@ -911,6 +913,8 @@ let currentProyectoId = null;
 let adminView = false;
 let sbmUsuarios = []; // usuarios desde Supabase
 let editingPedidoEstado = null;
+let historialProyecto = [];
+let historialAdmin = [];
 
 // ══════════════════════════════════════════
 //  LOGIN (desde Supabase)
@@ -1011,18 +1015,49 @@ async function loadPresupuestos(proyectoId) {
 }
 
 async function loadHistorial(proyectoId) {
-  const twoMonthsAgo = new Date();
-  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-
   const { data, error } = await db
     .from('pedidos')
     .select('*, pedido_items(*)')
     .eq('proyecto_id', proyectoId)
-    .gte('created_at', twoMonthsAgo.toISOString())
-    .order('created_at', { ascending: false })
-    .limit(20);
+    .order('created_at', { ascending: false });
 
-  renderHistorial(data || []);
+  historialProyecto = error ? [] : (data || []);
+  renderHistoryMonthFilter('history-filter', historialProyecto, 'filtrarHistorialProyecto');
+  filtrarHistorialProyecto();
+}
+
+function monthKey(dateValue) {
+  const d = new Date(dateValue);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function monthLabel(key) {
+  const [year, month] = key.split('-').map(Number);
+  return new Date(year, month - 1, 1).toLocaleDateString('es-CR', { month: 'long', year: 'numeric' });
+}
+
+function currentMonthRange() {
+  const now = new Date();
+  return {
+    start: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(),
+    end: new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString()
+  };
+}
+
+function renderHistoryMonthFilter(containerId, pedidos, handler) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const months = [...new Set(pedidos.map(p => monthKey(p.created_at)))].sort().reverse();
+  container.innerHTML = `<label style="font-size:12px;color:var(--muted);margin-right:8px;">Revisar mes:</label>
+    <select onchange="${handler}()" style="padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);">
+      <option value="all">Todos los meses</option>
+      ${months.map(m => `<option value="${m}">${monthLabel(m)}</option>`).join('')}
+    </select>`;
+}
+
+function filtrarHistorialProyecto() {
+  const selected = document.querySelector('#history-filter select')?.value || 'all';
+  renderHistorial(selected === 'all' ? historialProyecto : historialProyecto.filter(p => monthKey(p.created_at) === selected));
 }
 
 // ══════════════════════════════════════════
@@ -1386,7 +1421,7 @@ function renderBudget() {
 function renderHistorial(pedidos) {
   const container = document.getElementById('history-list');
   if (!pedidos.length) {
-    container.innerHTML = '<div class="history-empty">Sin pedidos en los últimos 2 meses</div>';
+    container.innerHTML = '<div class="history-empty">Sin pedidos para el período seleccionado</div>';
     return;
   }
   container.innerHTML = pedidos.map(p => {
@@ -1905,15 +1940,15 @@ async function loadUberConsolidado() {
   const uberProyectos = proyectos.filter(p => UBER_PROYECTOS.includes(p.nombre));
   if (!uberProyectos.length) return null;
 
-  const twoMonthsAgo = new Date();
-  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+  const activeMonth = currentMonthRange();
 
   // Cargar pedidos de los 3 Uber
   const { data: pedidos } = await db
     .from('pedidos')
     .select('*, pedido_items(*), proyectos(nombre)')
     .in('proyecto_id', uberProyectos.map(p => p.id))
-    .gte('created_at', twoMonthsAgo.toISOString());
+    .gte('created_at', activeMonth.start)
+    .lt('created_at', activeMonth.end);
 
   // Cargar presupuestos de los 3 Uber
   const { data: presups } = await db
@@ -2293,16 +2328,21 @@ async function saveBudget(proyectoId) {
 }
 
 async function loadAdminHistory() {
-  const twoMonthsAgo = new Date();
-  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-
   const { data } = await db.from('pedidos')
     .select('*, proyectos(nombre), pedido_items(*)')
-    .gte('created_at', twoMonthsAgo.toISOString())
     .order('created_at', { ascending: false });
 
+  historialAdmin = data || [];
+  renderHistoryMonthFilter('admin-history-filter', historialAdmin, 'filtrarHistorialAdmin');
+  filtrarHistorialAdmin();
+}
+
+function filtrarHistorialAdmin() {
+  const selected = document.querySelector('#admin-history-filter select')?.value || 'all';
+  const data = selected === 'all' ? historialAdmin : historialAdmin.filter(p => monthKey(p.created_at) === selected);
+
   const container = document.getElementById('admin-history');
-  if (!data?.length) { container.innerHTML = '<div class="history-empty">Sin pedidos en los últimos 2 meses</div>'; return; }
+  if (!data?.length) { container.innerHTML = '<div class="history-empty">Sin pedidos para el período seleccionado</div>'; return; }
 
   container.innerHTML = `
     <table class="admin-table">
