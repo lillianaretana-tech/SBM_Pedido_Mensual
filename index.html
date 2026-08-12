@@ -915,6 +915,24 @@
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
+<!-- REPORTE DE MOVIMIENTOS PRESUPUESTARIOS -->
+<div id="movimientos-modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:700;align-items:center;justify-content:center;padding:20px;">
+  <div style="width:min(920px,100%);max-height:92vh;overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.45);">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--card);z-index:2;">
+      <div>
+        <div style="font-size:16px;font-weight:700;">Reporte de movimientos presupuestarios</div>
+        <div id="movimientos-modal-subtitle" style="font-size:12px;color:var(--muted);margin-top:3px;"></div>
+      </div>
+      <button onclick="closeMovimientosModal()" aria-label="Cerrar" style="border:1px solid var(--border);background:transparent;color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer;">✕</button>
+    </div>
+    <div id="movimientos-report-content" style="padding:20px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;padding:16px 20px;border-top:1px solid var(--border);">
+      <button onclick="exportMovimientosExcel()" style="padding:9px 14px;border:1px solid var(--accent);border-radius:8px;background:transparent;color:var(--accent);font-weight:600;cursor:pointer;">📊 Descargar Excel</button>
+      <button onclick="printMovimientosReport()" style="padding:9px 14px;border:none;border-radius:8px;background:var(--accent);color:white;font-weight:600;cursor:pointer;">📄 Imprimir / PDF</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ══════════════════════════════════════════
 //  CONFIGURACIÓN
@@ -948,6 +966,7 @@ let sbmUsuarios = []; // usuarios desde Supabase
 let editingPedidoEstado = null;
 let historialProyecto = [];
 let historialAdmin = [];
+let movimientosReportActual = null;
 
 // ══════════════════════════════════════════
 //  LOGIN (desde Supabase)
@@ -1687,6 +1706,147 @@ async function actualizarPedido(pedidoId) {
   }
 }
 
+async function buildMovimientosReport(proyectoId) {
+  const month = currentMonthRange();
+  const proyecto = proyectos.find(p => p.id === proyectoId) || proyectosAdmin.find(p => p.id === proyectoId);
+
+  const [{ data: pedidos, error: pedidosError }, { data: budgets, error: budgetsError }] = await Promise.all([
+    db.from('pedidos')
+      .select('id, total, created_at, pedido_items(linea, precio, cantidad)')
+      .eq('proyecto_id', proyectoId)
+      .eq('estado', 'aprobado')
+      .gte('created_at', month.start)
+      .lt('created_at', month.end),
+    db.from('presupuestos').select('linea, monto').eq('proyecto_id', proyectoId)
+  ]);
+
+  if (pedidosError) throw pedidosError;
+  if (budgetsError) throw budgetsError;
+
+  const presupuestoPorLinea = {};
+  const gastoPorLinea = {};
+  LINEAS.forEach(linea => {
+    presupuestoPorLinea[linea] = 0;
+    gastoPorLinea[linea] = 0;
+  });
+  (budgets || []).forEach(b => { presupuestoPorLinea[b.linea] = Number(b.monto) || 0; });
+  (pedidos || []).forEach(pedido => {
+    (pedido.pedido_items || []).forEach(item => {
+      gastoPorLinea[item.linea] = (gastoPorLinea[item.linea] || 0) + (Number(item.precio) || 0) * (Number(item.cantidad) || 0);
+    });
+  });
+
+  const detalle = LINEAS.map(linea => {
+    const presupuesto = presupuestoPorLinea[linea] || 0;
+    const gasto = gastoPorLinea[linea] || 0;
+    return { linea, presupuesto, gasto, saldo: presupuesto - gasto };
+  });
+
+  const fuentes = detalle.filter(d => d.saldo > 0).map(d => ({ linea: d.linea, disponible: d.saldo })).sort((a, b) => b.disponible - a.disponible);
+  const destinos = detalle.filter(d => d.saldo < 0).map(d => ({ linea: d.linea, faltante: Math.abs(d.saldo) })).sort((a, b) => b.faltante - a.faltante);
+  const movimientos = [];
+
+  destinos.forEach(destino => {
+    fuentes.forEach(fuente => {
+      if (destino.faltante <= 0 || fuente.disponible <= 0) return;
+      const monto = Math.min(destino.faltante, fuente.disponible);
+      movimientos.push({ desde: fuente.linea, hacia: destino.linea, monto });
+      fuente.disponible -= monto;
+      destino.faltante -= monto;
+    });
+  });
+
+  const faltanteNoCubierto = destinos.reduce((sum, d) => sum + d.faltante, 0);
+  const totalPresupuesto = detalle.reduce((sum, d) => sum + d.presupuesto, 0);
+  const totalGasto = detalle.reduce((sum, d) => sum + d.gasto, 0);
+  const now = new Date();
+
+  return {
+    proyectoId,
+    proyectoNombre: proyecto?.nombre || 'Proyecto',
+    periodo: monthLabel(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`),
+    generadoEn: now.toISOString(),
+    pedidosAprobados: (pedidos || []).length,
+    detalle,
+    movimientos,
+    faltanteNoCubierto,
+    totalPresupuesto,
+    totalGasto
+  };
+}
+
+function renderMovimientosReport(report) {
+  const statusColor = report.faltanteNoCubierto > 0 ? 'var(--danger)' : 'var(--accent)';
+  const statusBg = report.faltanteNoCubierto > 0 ? 'var(--danger-light)' : 'var(--accent-light)';
+  const statusText = report.faltanteNoCubierto > 0
+    ? `El presupuesto total no alcanza. Quedan ₡${fmtNum(report.faltanteNoCubierto)} sin cubrir.`
+    : (report.movimientos.length ? 'El presupuesto total alcanza aplicando los movimientos indicados.' : 'No se requieren movimientos entre líneas.');
+
+  return `
+    <div style="background:${statusBg};border:1px solid ${statusColor};color:${statusColor};border-radius:10px;padding:11px 13px;font-size:13px;font-weight:600;margin-bottom:16px;">${statusText}</div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="border-bottom:2px solid var(--border);color:var(--muted);text-transform:uppercase;font-size:10px;">
+          <th style="text-align:left;padding:7px;">Línea</th><th style="text-align:right;padding:7px;">Presupuesto</th><th style="text-align:right;padding:7px;">Gasto aprobado</th><th style="text-align:right;padding:7px;">Saldo / faltante</th>
+        </tr></thead>
+        <tbody>${report.detalle.map(d => `<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:8px;"><span class="linea-badge linea-${d.linea}">${LABELS[d.linea]}</span></td>
+          <td style="padding:8px;text-align:right;font-family:'DM Mono',monospace;">₡${fmtNum(d.presupuesto)}</td>
+          <td style="padding:8px;text-align:right;font-family:'DM Mono',monospace;">₡${fmtNum(d.gasto)}</td>
+          <td style="padding:8px;text-align:right;font-family:'DM Mono',monospace;font-weight:700;color:${d.saldo < 0 ? 'var(--danger)' : 'var(--accent)'};">${d.saldo < 0 ? '−' : '+'}₡${fmtNum(Math.abs(d.saldo))}</td>
+        </tr>`).join('')}</tbody>
+        <tfoot><tr style="border-top:2px solid var(--border);font-weight:700;">
+          <td style="padding:9px 8px;">TOTAL</td><td style="padding:9px 8px;text-align:right;">₡${fmtNum(report.totalPresupuesto)}</td><td style="padding:9px 8px;text-align:right;">₡${fmtNum(report.totalGasto)}</td><td style="padding:9px 8px;text-align:right;color:${report.totalPresupuesto - report.totalGasto < 0 ? 'var(--danger)' : 'var(--accent)'};">${report.totalPresupuesto - report.totalGasto < 0 ? '−' : '+'}₡${fmtNum(Math.abs(report.totalPresupuesto - report.totalGasto))}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+    <div style="margin-top:20px;font-size:13px;font-weight:700;">Movimientos recomendados</div>
+    <div style="margin-top:8px;display:grid;gap:7px;">
+      ${report.movimientos.length ? report.movimientos.map((m, index) => `<div style="padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg);"><strong>${index + 1}.</strong> Transferir <strong>₡${fmtNum(m.monto)}</strong> de <span class="linea-badge linea-${m.desde}">${LABELS[m.desde]}</span> a <span class="linea-badge linea-${m.hacia}">${LABELS[m.hacia]}</span></div>`).join('') : '<div style="color:var(--muted);padding:8px 0;">No se necesitan transferencias.</div>'}
+    </div>
+    ${report.faltanteNoCubierto > 0 ? `<div style="margin-top:12px;color:var(--danger);font-size:12px;">⚠ Además de las transferencias anteriores, se requieren ₡${fmtNum(report.faltanteNoCubierto)} adicionales para cubrir el gasto del mes.</div>` : ''}
+    <div style="margin-top:18px;color:var(--muted);font-size:11px;">Cálculo basado en ${report.pedidosAprobados} pedido(s) aprobado(s) del mes. Este reporte recomienda movimientos; no modifica los presupuestos guardados.</div>`;
+}
+
+function showMovimientosModal(report) {
+  movimientosReportActual = report;
+  document.getElementById('movimientos-modal-subtitle').textContent = `${report.proyectoNombre} · ${report.periodo}`;
+  document.getElementById('movimientos-report-content').innerHTML = renderMovimientosReport(report);
+  document.getElementById('movimientos-modal-overlay').style.display = 'flex';
+}
+
+function closeMovimientosModal() {
+  document.getElementById('movimientos-modal-overlay').style.display = 'none';
+}
+
+function exportMovimientosExcel() {
+  const r = movimientosReportActual;
+  if (!r) return;
+  const rows = r.detalle.map(d => ({
+    'Línea': LABELS[d.linea], 'Presupuesto (₡)': d.presupuesto, 'Gasto aprobado (₡)': d.gasto,
+    'Saldo / faltante (₡)': d.saldo
+  }));
+  rows.push({ 'Línea': 'TOTAL', 'Presupuesto (₡)': r.totalPresupuesto, 'Gasto aprobado (₡)': r.totalGasto, 'Saldo / faltante (₡)': r.totalPresupuesto - r.totalGasto });
+  const movimientosRows = r.movimientos.map((m, i) => ({ 'N°': i + 1, 'Desde': LABELS[m.desde], 'Hacia': LABELS[m.hacia], 'Monto (₡)': m.monto }));
+  if (r.faltanteNoCubierto > 0) movimientosRows.push({ 'N°': '', 'Desde': 'FALTANTE EXTERNO', 'Hacia': '', 'Monto (₡)': r.faltanteNoCubierto });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Resumen por línea');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(movimientosRows.length ? movimientosRows : [{ Resultado: 'No se requieren movimientos' }]), 'Movimientos');
+  XLSX.writeFile(wb, `Movimientos_${r.proyectoNombre}_${r.periodo.replace(/\s+/g, '_')}.xlsx`);
+}
+
+function printMovimientosReport() {
+  const r = movimientosReportActual;
+  if (!r) return;
+  const win = window.open('', '_blank');
+  if (!win) { showToast('Permití las ventanas emergentes para imprimir el reporte', 'warning'); return; }
+  const movements = r.movimientos.length
+    ? r.movimientos.map((m, i) => `<li>Transferir <strong>₡${fmtNum(m.monto)}</strong> de ${LABELS[m.desde]} a ${LABELS[m.hacia]}</li>`).join('')
+    : '<li>No se requieren movimientos.</li>';
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Movimientos - ${r.proyectoNombre}</title><style>body{font-family:Arial,sans-serif;color:#222;padding:28px}h1{font-size:20px;margin-bottom:4px}.meta{color:#666;font-size:12px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #ccc;padding:8px}th{background:#f2f2f2;text-align:left}.num{text-align:right}.neg{color:#b42318;font-weight:bold}.ok{color:#087a55;font-weight:bold}li{margin:8px 0}.note{margin-top:20px;font-size:11px;color:#666}@media print{body{padding:0}}</style></head><body><h1>Reporte de movimientos presupuestarios</h1><div class="meta">${r.proyectoNombre} · ${r.periodo} · ${r.pedidosAprobados} pedido(s) aprobado(s)</div><table><thead><tr><th>Línea</th><th class="num">Presupuesto</th><th class="num">Gasto aprobado</th><th class="num">Saldo / faltante</th></tr></thead><tbody>${r.detalle.map(d => `<tr><td>${LABELS[d.linea]}</td><td class="num">₡${fmtNum(d.presupuesto)}</td><td class="num">₡${fmtNum(d.gasto)}</td><td class="num ${d.saldo < 0 ? 'neg' : 'ok'}">${d.saldo < 0 ? '−' : '+'}₡${fmtNum(Math.abs(d.saldo))}</td></tr>`).join('')}</tbody></table><h2 style="font-size:15px;margin-top:22px;">Movimientos recomendados</h2><ol>${movements}</ol>${r.faltanteNoCubierto > 0 ? `<p class="neg">Faltante adicional sin cubrir: ₡${fmtNum(r.faltanteNoCubierto)}</p>` : ''}<p class="note">Este reporte recomienda movimientos; no modifica los presupuestos guardados.</p><script>window.onload=()=>window.print();<\/script></body></html>`);
+  win.document.close();
+}
+
 async function aprobarPedido(pedidoId) {
   const p = await getPedidoData(pedidoId);
   if (!p) return;
@@ -1732,19 +1892,30 @@ async function aprobarPedido(pedidoId) {
 
   try {
     // Actualizar estado a aprobado
-    await db.from('pedidos').update({ estado: 'aprobado' }).eq('id', pedidoId);
+    const { error: approveError } = await db.from('pedidos').update({ estado: 'aprobado' }).eq('id', pedidoId);
+    if (approveError) throw approveError;
 
-    // Enviar email final
-    await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
-      proyecto: proyecto?.nombre,
-      fecha: fecha,
-      name: currentUser.nombre,
-      mensaje: emailHtml,
-      to_email: 'Lretana@sbmcorp.com'
-    });
+    // Calcular el acumulado mensual ya incluyendo este pedido aprobado
+    const movimientosReport = await buildMovimientosReport(p.proyecto_id);
 
-    showToast('¡Pedido aprobado y enviado!', 'success');
+    // El reporte debe quedar disponible aunque el correo tenga un fallo independiente.
+    let emailEnviado = true;
+    try {
+      await emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+        proyecto: proyecto?.nombre,
+        fecha: fecha,
+        name: currentUser.nombre,
+        mensaje: emailHtml,
+        to_email: 'Lretana@sbmcorp.com'
+      });
+    } catch (emailError) {
+      emailEnviado = false;
+      console.error('Pedido aprobado, pero falló el correo:', emailError);
+    }
+
+    showToast(emailEnviado ? '¡Pedido aprobado y enviado!' : 'Pedido aprobado; no se pudo enviar el correo', emailEnviado ? 'success' : 'warning');
     await loadAdminHistory();
+    showMovimientosModal(movimientosReport);
   } catch(e) {
     console.error(e);
     showToast('Error al aprobar el pedido', 'error');
