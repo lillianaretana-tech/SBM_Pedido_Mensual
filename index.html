@@ -1742,7 +1742,9 @@ async function buildMovimientosReport(proyectoId) {
     return { linea, presupuesto, gasto, saldo: presupuesto - gasto };
   });
 
-  const fuentes = detalle.filter(d => d.saldo > 0).map(d => ({ linea: d.linea, disponible: d.saldo })).sort((a, b) => b.disponible - a.disponible);
+  // Overhead es una línea protegida: su saldo nunca se ofrece como fuente.
+  const saldoOverheadReservado = Math.max(0, detalle.find(d => d.linea === 'Overhead')?.saldo || 0);
+  const fuentes = detalle.filter(d => d.saldo > 0 && d.linea !== 'Overhead').map(d => ({ linea: d.linea, disponible: d.saldo })).sort((a, b) => b.disponible - a.disponible);
   const destinos = detalle.filter(d => d.saldo < 0).map(d => ({ linea: d.linea, faltante: Math.abs(d.saldo) })).sort((a, b) => b.faltante - a.faltante);
   const movimientos = [];
 
@@ -1770,6 +1772,7 @@ async function buildMovimientosReport(proyectoId) {
     detalle,
     movimientos,
     faltanteNoCubierto,
+    saldoOverheadReservado,
     totalPresupuesto,
     totalGasto
   };
@@ -1778,8 +1781,11 @@ async function buildMovimientosReport(proyectoId) {
 function renderMovimientosReport(report) {
   const statusColor = report.faltanteNoCubierto > 0 ? 'var(--danger)' : 'var(--accent)';
   const statusBg = report.faltanteNoCubierto > 0 ? 'var(--danger-light)' : 'var(--accent-light)';
+  const faltantePorReservaOverhead = report.faltanteNoCubierto > 0 && report.saldoOverheadReservado > 0 && report.totalPresupuesto >= report.totalGasto;
   const statusText = report.faltanteNoCubierto > 0
-    ? `El presupuesto total no alcanza. Quedan ₡${fmtNum(report.faltanteNoCubierto)} sin cubrir.`
+    ? (faltantePorReservaOverhead
+      ? `Quedan ₡${fmtNum(report.faltanteNoCubierto)} sin cubrir porque el saldo de Overhead está reservado y no puede utilizarse.`
+      : `El presupuesto disponible no alcanza. Quedan ₡${fmtNum(report.faltanteNoCubierto)} sin cubrir.`)
     : (report.movimientos.length ? 'El presupuesto total alcanza aplicando los movimientos indicados.' : 'No se requieren movimientos entre líneas.');
 
   return `
@@ -1805,7 +1811,8 @@ function renderMovimientosReport(report) {
       ${report.movimientos.length ? report.movimientos.map((m, index) => `<div style="padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg);"><strong>${index + 1}.</strong> Transferir <strong>₡${fmtNum(m.monto)}</strong> de <span class="linea-badge linea-${m.desde}">${LABELS[m.desde]}</span> a <span class="linea-badge linea-${m.hacia}">${LABELS[m.hacia]}</span></div>`).join('') : '<div style="color:var(--muted);padding:8px 0;">No se necesitan transferencias.</div>'}
     </div>
     ${report.faltanteNoCubierto > 0 ? `<div style="margin-top:12px;color:var(--danger);font-size:12px;">⚠ Además de las transferencias anteriores, se requieren ₡${fmtNum(report.faltanteNoCubierto)} adicionales para cubrir el gasto del mes.</div>` : ''}
-    <div style="margin-top:18px;color:var(--muted);font-size:11px;">Cálculo basado en ${report.pedidosAprobados} pedido(s) aprobado(s) del mes. Este reporte recomienda movimientos; no modifica los presupuestos guardados.</div>`;
+    ${report.saldoOverheadReservado > 0 ? `<div style="margin-top:12px;color:var(--warning);font-size:12px;">🔒 Saldo de Overhead reservado: ₡${fmtNum(report.saldoOverheadReservado)}. No se utiliza para cubrir otras líneas.</div>` : ''}
+    <div style="margin-top:18px;color:var(--muted);font-size:11px;">Cálculo basado en ${report.pedidosAprobados} pedido(s) aprobado(s) del mes. El saldo de Overhead no se utiliza como fuente. Este reporte recomienda movimientos; no modifica los presupuestos guardados.</div>`;
 }
 
 function showMovimientosModal(report) {
@@ -1843,7 +1850,7 @@ function printMovimientosReport() {
   const movements = r.movimientos.length
     ? r.movimientos.map((m, i) => `<li>Transferir <strong>₡${fmtNum(m.monto)}</strong> de ${LABELS[m.desde]} a ${LABELS[m.hacia]}</li>`).join('')
     : '<li>No se requieren movimientos.</li>';
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Movimientos - ${r.proyectoNombre}</title><style>body{font-family:Arial,sans-serif;color:#222;padding:28px}h1{font-size:20px;margin-bottom:4px}.meta{color:#666;font-size:12px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #ccc;padding:8px}th{background:#f2f2f2;text-align:left}.num{text-align:right}.neg{color:#b42318;font-weight:bold}.ok{color:#087a55;font-weight:bold}li{margin:8px 0}.note{margin-top:20px;font-size:11px;color:#666}@media print{body{padding:0}}</style></head><body><h1>Reporte de movimientos presupuestarios</h1><div class="meta">${r.proyectoNombre} · ${r.periodo} · ${r.pedidosAprobados} pedido(s) aprobado(s)</div><table><thead><tr><th>Línea</th><th class="num">Presupuesto</th><th class="num">Gasto aprobado</th><th class="num">Saldo / faltante</th></tr></thead><tbody>${r.detalle.map(d => `<tr><td>${LABELS[d.linea]}</td><td class="num">₡${fmtNum(d.presupuesto)}</td><td class="num">₡${fmtNum(d.gasto)}</td><td class="num ${d.saldo < 0 ? 'neg' : 'ok'}">${d.saldo < 0 ? '−' : '+'}₡${fmtNum(Math.abs(d.saldo))}</td></tr>`).join('')}</tbody></table><h2 style="font-size:15px;margin-top:22px;">Movimientos recomendados</h2><ol>${movements}</ol>${r.faltanteNoCubierto > 0 ? `<p class="neg">Faltante adicional sin cubrir: ₡${fmtNum(r.faltanteNoCubierto)}</p>` : ''}<p class="note">Este reporte recomienda movimientos; no modifica los presupuestos guardados.</p><script>window.onload=()=>window.print();<\/script></body></html>`);
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Movimientos - ${r.proyectoNombre}</title><style>body{font-family:Arial,sans-serif;color:#222;padding:28px}h1{font-size:20px;margin-bottom:4px}.meta{color:#666;font-size:12px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #ccc;padding:8px}th{background:#f2f2f2;text-align:left}.num{text-align:right}.neg{color:#b42318;font-weight:bold}.ok{color:#087a55;font-weight:bold}li{margin:8px 0}.note{margin-top:20px;font-size:11px;color:#666}@media print{body{padding:0}}</style></head><body><h1>Reporte de movimientos presupuestarios</h1><div class="meta">${r.proyectoNombre} · ${r.periodo} · ${r.pedidosAprobados} pedido(s) aprobado(s)</div><table><thead><tr><th>Línea</th><th class="num">Presupuesto</th><th class="num">Gasto aprobado</th><th class="num">Saldo / faltante</th></tr></thead><tbody>${r.detalle.map(d => `<tr><td>${LABELS[d.linea]}</td><td class="num">₡${fmtNum(d.presupuesto)}</td><td class="num">₡${fmtNum(d.gasto)}</td><td class="num ${d.saldo < 0 ? 'neg' : 'ok'}">${d.saldo < 0 ? '−' : '+'}₡${fmtNum(Math.abs(d.saldo))}</td></tr>`).join('')}</tbody></table><h2 style="font-size:15px;margin-top:22px;">Movimientos recomendados</h2><ol>${movements}</ol>${r.faltanteNoCubierto > 0 ? `<p class="neg">Faltante adicional sin cubrir: ₡${fmtNum(r.faltanteNoCubierto)}</p>` : ''}${r.saldoOverheadReservado > 0 ? `<p><strong>Saldo de Overhead reservado:</strong> ₡${fmtNum(r.saldoOverheadReservado)}. No se utiliza para cubrir otras líneas.</p>` : ''}<p class="note">Este reporte recomienda movimientos; no modifica los presupuestos guardados.</p><script>window.onload=()=>window.print();<\/script></body></html>`);
   win.document.close();
 }
 
