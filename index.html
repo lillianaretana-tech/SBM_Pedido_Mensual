@@ -1587,7 +1587,7 @@ function renderHistorial(pedidos) {
     return `
       <div class="history-item">
         <div class="history-header">
-          <span class="history-title">${fecha}</span>
+          <span class="history-title">${fecha}</span><span class="linea-badge" style="background:var(--accent-light);color:var(--accent)">Consumo: ${p.periodo ? monthLabel(p.periodo) : "Sin asignar"}</span>
           <span class="history-total">₡${fmtNum(p.total)}</span>
         </div>
         <div class="history-meta" style="margin-bottom:6px;">
@@ -2711,6 +2711,17 @@ async function loadAdminHistory() {
   filtrarHistorialAdmin();
 }
 
+async function cambiarPeriodoPedido(pedidoId) {
+ if(!isAdmin())return;
+ const p=historialAdmin.find(x=>x.id===pedidoId);if(!p)return;
+ const nuevo=prompt('Mes de consumo (AAAA-MM):',p.periodo||'2026-12');if(nuevo===null)return;
+ if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(nuevo)){showToast('Use AAAA-MM','error');return;}
+ const {data,error:e}=await db.from('pedidos').select('id').eq('proyecto_id',p.proyecto_id).eq('periodo',nuevo).neq('id',pedidoId).limit(1);
+ if(e){showToast(e.message,'error');return;}if(data?.length){showToast('Ya existe un pedido de ese proyecto para ese mes','warning');return;}
+ const {error}=await db.from('pedidos').update({periodo:nuevo,periodo_confirmado:true}).eq('id',pedidoId);
+ if(error){showToast(error.message,'error');return;}showToast('Mes actualizado','success');await loadAdminHistory();
+}
+
 function filtrarHistorialAdmin() {
   const selected = document.querySelector('#admin-history-filter select')?.value || 'all';
   const data = selected === 'all' ? historialAdmin : historialAdmin.filter(p => monthKey(p.created_at) === selected);
@@ -2720,7 +2731,7 @@ function filtrarHistorialAdmin() {
 
   container.innerHTML = `
     <table class="admin-table">
-      <thead><tr><th>Fecha</th><th>Proyecto</th><th>Items</th><th style="text-align:right;">Total</th><th>Estado</th><th>Acciones</th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Proyecto</th><th>Mes de consumo</th><th>Items</th><th style="text-align:right;">Total</th><th>Estado</th><th>Acciones</th></tr></thead>
       <tbody>
         ${data.map(p => {
           const esBorrador = p.estado === 'borrador';
@@ -2729,11 +2740,12 @@ function filtrarHistorialAdmin() {
           <tr>
             <td>${new Date(p.created_at).toLocaleDateString('es-CR')}</td>
             <td>${p.proyectos?.nombre || '—'}</td>
+            <td><strong>${p.periodo ? monthLabel(p.periodo) : "Sin asignar"}</strong></td>
             <td>${p.pedido_items?.length || 0}</td>
             <td style="text-align:right;font-family:'DM Mono',monospace;">₡${fmtNum(p.total)}</td>
             <td><span class="linea-badge" style="${badgeStyle}">${esBorrador ? '⏳ Borrador' : '✓ Aprobado'}</span></td>
             <td style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 8px;">
-              <button onclick="editarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--accent);border-radius:6px;background:transparent;color:var(--accent);font-size:11px;cursor:pointer;">✏️ Editar</button>
+              <button onclick="cambiarPeriodoPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--accent);border-radius:6px;background:transparent;color:var(--accent);font-size:11px;cursor:pointer;">📅 Cambiar mes</button><button onclick="editarPedido('${p.id}')" style="padding:3px 10px;border:1px solid var(--accent);border-radius:6px;background:transparent;color:var(--accent);font-size:11px;cursor:pointer;">✏️ Editar</button>
               ${esBorrador ? `
                 <button onclick="aprobarPedido('${p.id}')" style="padding:3px 10px;border:none;border-radius:6px;background:var(--accent);color:white;font-size:11px;cursor:pointer;">✅ Aprobar</button>
               ` : ''}
