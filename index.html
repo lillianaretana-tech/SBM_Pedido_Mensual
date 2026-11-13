@@ -2119,6 +2119,22 @@ async function enviarPedido() {
   const lineas = ['EPP', 'Quimicos', 'Suministros', 'Uniformes', 'Overhead'];
   const labels = { EPP: 'EPP', Quimicos: 'Químicos', Suministros: 'Suministros', Uniformes: 'Uniformes', Overhead: 'Overhead' };
 
+  // Período de consumo: normalmente mes siguiente; noviembre 2026 admite diciembre y enero.
+  const ahoraPedido = new Date();
+  const siguientePedido = new Date(ahoraPedido.getFullYear(), ahoraPedido.getMonth() + 1, 1);
+  const sugeridoPedido = siguientePedido.getFullYear() + '-' + String(siguientePedido.getMonth()+1).padStart(2,'0');
+  const periodoElegido = prompt('Mes de consumo del pedido (AAAA-MM). En noviembre puede elegir 2026-12 o 2027-01:', sugeridoPedido);
+  if (periodoElegido === null) return;
+  if (!/^\\d{4}-(0[1-9]|1[0-2])$/.test(periodoElegido)) {
+    showToast('Indique un período válido: AAAA-MM', 'error'); return;
+  }
+  const { data: existentesPeriodo, error: errorPeriodo } = await db.from('pedidos')
+    .select('id,estado').eq('proyecto_id', currentProyectoId).eq('periodo', periodoElegido).limit(1);
+  if (errorPeriodo) { showToast('No se pudo comprobar el período: '+errorPeriodo.message,'error'); return; }
+  if (existentesPeriodo?.length) {
+    showToast('Ya existe un pedido para '+periodoElegido+'. Edite el existente en el historial.','warning'); return;
+  }
+
   // Guardar en Supabase como BORRADOR
   let pedidoId = null;
   try {
@@ -2126,6 +2142,7 @@ async function enviarPedido() {
       proyecto_id: currentProyectoId,
       supervisor_id: currentUser.id,
       estado: 'borrador',
+      periodo: periodoElegido,
       total: total,
       notas: notas
     }).select().single();
