@@ -769,6 +769,12 @@
     <div id="tab-presupuestos" class="tab-content">
       <div class="card">
         <div class="card-title">Presupuestos por proyecto</div>
+        <div style="padding:14px;border:1px solid var(--border);border-radius:12px;margin-bottom:18px">
+          <strong>Excel de movimientos entre líneas</strong>
+          <p style="font-size:13px;color:var(--muted)">Calcula los traslados sugeridos con los pedidos aprobados y los presupuestos de cada proyecto.</p>
+          <label>Mes de consumo <input type="month" id="movimientos-periodo" value="2026-12" style="padding:9px;margin:8px"></label>
+          <button class="btn-add-gasto" onclick="exportMovimientosMensuales()">Generar Excel de movimientos</button>
+        </div>
         <div class="budget-grid" id="budget-grid"></div>
       </div>
     </div>
@@ -1704,6 +1710,48 @@ async function actualizarPedido(pedidoId) {
     btn.disabled = false;
     btn.textContent = editingPedidoEstado === 'aprobado' ? 'Actualizar pedido aprobado' : 'Actualizar borrador';
   }
+}
+
+
+async function exportMovimientosMensuales() {
+  const periodo = document.getElementById('movimientos-periodo')?.value;
+  if (!/^\\d{4}-(0[1-9]|1[0-2])$/.test(periodo || '')) { showToast('Seleccione un mes válido','error'); return; }
+  try {
+    const [{data: pedidos,error: ep},{data: presupuestos,error: eb},{data: proyectosLista,error: ej}] = await Promise.all([
+      db.from('pedidos').select('id,proyecto_id,periodo,estado,pedido_items(linea,precio,cantidad)').eq('periodo',periodo).eq('estado','aprobado'),
+      db.from('presupuestos').select('proyecto_id,linea,monto'),
+      db.from('proyectos').select('id,nombre')
+    ]);
+    if(ep||eb||ej) throw ep||eb||ej;
+    if(!(pedidos||[]).length) { showToast('No hay pedidos aprobados para ese mes','warning');return; }
+    const nombres = Object.fromEntries((proyectosLista||[]).map(p=>[p.id,p.nombre]));
+    const porProyecto = {};
+    (pedidos||[]).forEach(p=>{
+      const g=porProyecto[p.proyecto_id] ||= {};
+      (p.pedido_items||[]).forEach(i=>g[i.linea]=(g[i.linea]||0)+Number(i.precio||0)*Number(i.cantidad||0));
+    });
+    const filas=[['Proyecto','Trasladar de:','A la cuenta de:','Monto','Observaciones']];
+    const pendientes=[];
+    let total=0;
+    Object.keys(porProyecto).sort((a,b)=>(nombres[a]||'').localeCompare(nombres[b]||'')).forEach(id=>{
+      const bases={};(presupuestos||[]).filter(b=>b.proyecto_id===id).forEach(b=>bases[b.linea]=(bases[b.linea]||0)+Number(b.monto||0));
+      const consumos=porProyecto[id];
+      const lineas=new Set([...Object.keys(bases),...Object.keys(consumos)]);
+      const origenes=[],destinos=[];
+      lineas.forEach(linea=>{const saldo=(bases[linea]||0)-(consumos[linea]||0);if(saldo>0.005 && linea!=='Overhead')origenes.push({linea,saldo});if(saldo < -0.005)destinos.push({linea,falta:-saldo});});
+      origenes.sort((a,b)=>b.saldo-a.saldo);destinos.sort((a,b)=>b.falta-a.falta);
+      destinos.forEach(d=>{origenes.forEach(o=>{if(d.falta<0.005||o.saldo<0.005)return;const monto=Math.round(Math.min(d.falta,o.saldo)*100)/100;if(monto<=0)return;filas.push([nombres[id]||id,o.linea,d.linea,monto,'Sugerido según pedido aprobado']);total+=monto;o.saldo-=monto;d.falta-=monto;});if(d.falta>0.005)pendientes.push([nombres[id]||id,d.linea,Math.round(d.falta*100)/100]);});
+    });
+    filas.push(['','','TOTAL',Math.round(total*100)/100,'']);
+    const libro=XLSX.utils.book_new();
+    const hoja=XLSX.utils.aoa_to_sheet(filas);
+    hoja['!cols']=[{wch:25},{wch:24},{wch:27},{wch:17},{wch:43}];
+    for(let n=2;n<=filas.length;n++){const celda=hoja['D'+n];if(celda&&celda.t==='n')celda.z='"₡"#,##0.00';}
+    XLSX.utils.book_append_sheet(libro,hoja,'Movimientos '+periodo.slice(5));
+    if(pendientes.length){const faltas=XLSX.utils.aoa_to_sheet([['Proyecto','Línea sin cobertura','Monto'],...pendientes]);XLSX.utils.book_append_sheet(libro,faltas,'Sin cobertura');}
+    XLSX.writeFile(libro,'SBM_Movimientos_'+periodo+'.xlsx');
+    showToast('Excel de movimientos generado','success');
+  } catch(e) { console.error(e);showToast('Error al generar Excel: '+e.message,'error'); }
 }
 
 async function buildMovimientosReport(proyectoId) {
